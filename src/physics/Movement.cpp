@@ -189,16 +189,14 @@ void PlayerMove::Duck(PlayerState& s, const PlayerInput& in, float dt) {
 // ─── Jump ─────────────────────────────────────────────────────────────────────
 
 void PlayerMove::Jump(PlayerState& s, const PlayerInput& in) {
-    if (!in.jumpPressed) return;
-    if (!s.onGround)     return;
-    if (s.inWater)       return;
+    if (!in.jumpPressed)  return;
+    if (s.jumpHeldLast)   return; // GoldSrc: must release jump between hops
+    if (!s.onGround)      return;
+    if (s.inWater)        return;
 
     // GoldSrc applies a fixed upward velocity and removes ground contact
     s.velocity.z = JUMP_IMPULSE;
     s.onGround = false;
-
-    // Ducking while jumping gives a slight extra boost (CS 1.6 duck-jump)
-    // Not adding this yet — verify from recordings first
 }
 
 // ─── Slide (recursive Quake-style) ───────────────────────────────────────────
@@ -420,31 +418,42 @@ void PlayerMove::Move(PlayerState& s, const PlayerInput& in, float dt) {
     ClampVelocity(s);
     Duck(s, in, dt);
 
+    // CS 1.6 stance speed modifiers
+    PlayerInput eff = in;
+    if (s.ducking)
+        eff.wishSpeed *= DUCK_SPEED_FACTOR;
+    else if (in.walkPressed)
+        eff.wishSpeed *= WALK_SPEED_FACTOR;
+
     if (s.onLadder || in.onLadder) {
-        LadderMove(s, in, dt);
+        LadderMove(s, eff, dt);
         CategorizePosition(s);
+        s.jumpHeldLast = in.jumpPressed;
         return;
     }
 
     CheckWater(s);
 
     if (s.inWater && s.waterLevel >= 2) {
-        WaterMove(s, in, dt);
+        WaterMove(s, eff, dt);
         CategorizePosition(s);
+        s.jumpHeldLast = in.jumpPressed;
         return;
     }
 
-    // Jump (only when on ground)
+    // Jump (only when on ground, requires fresh press)
     Jump(s, in);
 
     if (s.onGround) {
-        GroundMove(s, in, dt);
+        GroundMove(s, eff, dt);
     } else {
-        AirMove(s, in, dt);
+        AirMove(s, eff, dt);
     }
 
     CategorizePosition(s);
     ClampVelocity(s);
+
+    s.jumpHeldLast = in.jumpPressed;
 }
 
 // ─── Fall damage ──────────────────────────────────────────────────────────────

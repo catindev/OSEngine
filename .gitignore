@@ -16,3 +16,6 @@ tests/test_bsp
 tests/test_entity
 tests/test_movement
 tests/test_wad
+tests/test_weapon
+tests/test_grenade
+tests/test_mdl_anim

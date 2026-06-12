@@ -4,6 +4,8 @@
 #include <glad/glad.h>
 #include <cstdio>
 #include <chrono>
+#include <cmath>
+#include <algorithm>
 
 namespace OS {
 
@@ -18,7 +20,6 @@ bool Engine::Init(const EngineConfig& cfg) {
         return false;
     }
 
-    // OpenGL context hints
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -44,42 +45,31 @@ bool Engine::Init(const EngineConfig& cfg) {
     }
 
     SDL_GL_MakeCurrent(m_window, m_glCtx);
-    SDL_GL_SetSwapInterval(1); // vsync
+    SDL_GL_SetSwapInterval(1);
 
-    // Load OpenGL functions via glad
     if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)) {
         fprintf(stderr, "gladLoadGLLoader failed\n");
         return false;
     }
 
-    // Init renderer
     if (!m_renderer.Init(cfg.width, cfg.height)) {
         fprintf(stderr, "Renderer init failed\n");
         return false;
     }
 
-    // Init audio (non-fatal if it fails)
     if (!m_audio.Init()) {
         fprintf(stderr, "Audio init failed (continuing without audio)\n");
     }
 
-    // Register cvars
     GameCVars::Register(CVarSystem::Instance());
-
-    // Load config
     CVarSystem::Instance().LoadConfig(cfg.csDir + "/cstrike/openStrike.cfg");
 
-    // Init asset manager
     m_assets.Init(cfg.csDir, cfg.gameDir);
-
-    // Init weapon database
     WeaponDatabase::Init();
 
-    // Init camera
     m_camera.fovY   = cfg.fov;
     m_camera.aspect = (float)cfg.width / (float)cfg.height;
 
-    // Init game rules from cvars
     auto& cv = CVarSystem::Instance();
     m_rules.Init(
         cv.GetFloat("mp_freezetime", 6),
@@ -90,19 +80,22 @@ bool Engine::Init(const EngineConfig& cfg) {
         cv.GetInt  ("mp_maxrounds",  30)
     );
 
-    // Local player setup
+    m_hud = std::make_unique<HUD>(m_renderer);
+    m_hud->SetScreenSize(cfg.width, cfg.height);
+
     m_localPlayer.id   = 0;
     m_localPlayer.name = "Player";
     m_localPlayer.team = TEAM_CT;
     m_localPlayer.alive = true;
-    m_localPlayer.physState.origin = {};
+    m_localPlayer.money = cv.GetInt("mp_startmoney", 800);
+
+    GiveDefaultLoadout();
 
     m_running = true;
 
     if (!cfg.startMap.empty()) {
         if (!LoadMap(cfg.startMap)) {
             fprintf(stderr, "Failed to load start map: %s\n", cfg.startMap.c_str());
-            // Continue without map (show blank screen)
         }
     }
 
@@ -111,6 +104,39 @@ bool Engine::Init(const EngineConfig& cfg) {
            m_renderer.Info().version.c_str());
 
     return true;
+}
+
+void Engine::GiveDefaultLoadout() {
+    m_weapons[SLOT_KNIFE] = WeaponSystem::MakeWeapon(WEAPON_KNIFE);
+    // CT default pistol = USP; T = Glock
+    WeaponID pistol = (m_localPlayer.team == TEAM_TERRORIST) ? WEAPON_GLOCK : WEAPON_USP;
+    m_weapons[SLOT_SECONDARY] = WeaponSystem::MakeWeapon(pistol);
+    m_weapons[SLOT_PRIMARY]   = {}; // none
+    m_weapons[SLOT_GRENADE]   = {};
+    m_activeSlot = SLOT_SECONDARY;
+    SetViewModel(pistol);
+}
+
+void Engine::SetViewModel(WeaponID id) {
+    const WeaponDef* def = WeaponDatabase::Get(id);
+    if (!def || def->modelV.empty()) { m_viewModel = nullptr; return; }
+
+    m_viewModel = m_assets.LoadMDL(def->modelV);
+    if (m_viewModel && !m_viewModel->valid) m_viewModel = nullptr;
+
+    if (m_viewModel) {
+        int idle = m_viewModel->FindSequence("idle");
+        m_vmSequence = idle >= 0 ? idle : 0;
+        m_vmFrame    = 0;
+        m_vmLoop     = true;
+    }
+}
+
+void Engine::PlayWeaponSound(const std::string& gamePath) {
+    if (gamePath.empty()) return;
+    std::string full = m_assets.Resolve(gamePath);
+    if (full.empty()) return;
+    m_audio.PlaySound(full, m_localPlayer.physState.origin, 1.0f, 1.0f, CHAN_WEAPON);
 }
 
 bool Engine::LoadMap(const std::string& mapName) {
@@ -128,10 +154,8 @@ bool Engine::LoadMap(const std::string& mapName) {
            m_currentBSP->leaves.size(),
            m_currentBSP->textures.size());
 
-    // Load WAD textures for this map
     m_assets.LoadWADsForMap(*m_currentBSP);
 
-    // Upload textures: for WAD-external textures, look them up
     for (auto& tex : const_cast<BSPFile*>(m_currentBSP)->textures) {
         if (!tex.embedded && !tex.wadName.empty()) {
             const WADTexture* wt = m_assets.FindTexture(tex.wadName);
@@ -144,36 +168,31 @@ bool Engine::LoadMap(const std::string& mapName) {
         }
     }
 
-    // Upload BSP geometry to GPU
     m_bspGPU = {};
     m_renderer.UploadBSP(*m_currentBSP, m_bspGPU, m_texCache);
-    // Make BSP available to RenderWorld
-    m_renderer.m_currentBSP = &m_bspGPU;
+    m_renderer.SetCurrentBSP(&m_bspGPU);
 
-    // Build collision system
-    m_collision = std::make_unique<CollisionSystem>(*m_currentBSP);
+    m_collision  = std::make_unique<CollisionSystem>(*m_currentBSP);
 
-    // Build player movement with CS 1.6 defaults
     MoveVars mv;
-    mv.gravity       = CVarSystem::Instance().GetFloat("sv_gravity",       800);
-    mv.maxspeed      = CVarSystem::Instance().GetFloat("sv_maxspeed",      320);
-    mv.accelerate    = CVarSystem::Instance().GetFloat("sv_accelerate",    10);
-    mv.airaccelerate = CVarSystem::Instance().GetFloat("sv_airaccelerate", 10);
-    mv.friction      = CVarSystem::Instance().GetFloat("sv_friction",      4);
-    mv.stopspeed     = CVarSystem::Instance().GetFloat("sv_stopspeed",     100);
-    mv.stepsize      = CVarSystem::Instance().GetFloat("sv_stepsize",      18);
+    auto& cv = CVarSystem::Instance();
+    mv.gravity       = cv.GetFloat("sv_gravity",       800);
+    mv.maxspeed      = cv.GetFloat("sv_maxspeed",      320);
+    mv.accelerate    = cv.GetFloat("sv_accelerate",    10);
+    mv.airaccelerate = cv.GetFloat("sv_airaccelerate", 10);
+    mv.friction      = cv.GetFloat("sv_friction",      4);
+    mv.stopspeed     = cv.GetFloat("sv_stopspeed",     100);
+    mv.stepsize      = cv.GetFloat("sv_stepsize",      18);
 
     m_playerMove = std::make_unique<PlayerMove>(mv, MakeTraceFn(*m_collision));
 
-    // Find spawn points for local player
     auto entities = EntityParser::Parse(m_currentBSP->entities);
     for (const auto& ent : entities) {
-        // CT spawns for testing
         if (ent.ClassName() == "info_player_start" ||
             ent.ClassName() == "info_player_counterterrorist") {
             Vec3 origin = ent.GetVec3("origin");
             m_localPlayer.physState.origin = origin;
-            m_camera.origin = origin + Vec3(0, 0, 28); // eye height
+            m_camera.origin = origin + Vec3(0, 0, 28);
             m_camera.angles = ent.GetAngles("angles");
             break;
         }
@@ -193,7 +212,6 @@ void Engine::Run() {
         auto now = Clock::now();
         float dt = std::chrono::duration<float>(now - prev).count();
         prev = now;
-        // Cap dt to prevent physics explosion on stalls
         if (dt > 0.1f) dt = 0.1f;
 
         ProcessEvents();
@@ -203,6 +221,8 @@ void Engine::Run() {
 }
 
 void Engine::ProcessEvents() {
+    m_firePressedEdge = false;
+
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
@@ -211,27 +231,53 @@ void Engine::ProcessEvents() {
             break;
 
         case SDL_KEYDOWN:
+            if (ev.key.repeat) break;
             switch (ev.key.keysym.sym) {
             case SDLK_ESCAPE:
                 m_mouseLocked = !m_mouseLocked;
                 SDL_SetRelativeMouseMode(m_mouseLocked ? SDL_TRUE : SDL_FALSE);
                 break;
-            case SDLK_SPACE:
-                m_jumpPressed = true;
-                break;
             case SDLK_F4:
                 m_running = false;
                 break;
+            case SDLK_r:
+                if (m_weaponSys.StartReload(m_weapons[m_activeSlot], m_gameTime)) {
+                    // Reload animation
+                    if (m_viewModel) {
+                        int seq = m_viewModel->FindSequence("reload");
+                        if (seq >= 0) { m_vmSequence = seq; m_vmFrame = 0; m_vmLoop = false; }
+                    }
+                }
+                break;
+            case SDLK_1: SwitchWeapon(SLOT_PRIMARY);   break;
+            case SDLK_2: SwitchWeapon(SLOT_SECONDARY); break;
+            case SDLK_3: SwitchWeapon(SLOT_KNIFE);     break;
+            case SDLK_4: SwitchWeapon(SLOT_GRENADE);   break;
+            case SDLK_g: {
+                // Throw HE grenade (if owned)
+                if (m_localPlayer.heGrenadeCount > 0) {
+                    m_localPlayer.heGrenadeCount--;
+                    Vec3 vel = GrenadeSystem::ThrowVelocity(
+                        m_camera.angles, m_localPlayer.physState.velocity);
+                    m_grenades.Throw(GrenadeType::HE,
+                        m_camera.origin + m_camera.Forward() * 16.0f,
+                        vel, m_localPlayer.id);
+                }
+                break;
+            }
             }
             break;
 
-        case SDLK_SPACE:
-            m_jumpPressed = false;
+        case SDL_MOUSEBUTTONDOWN:
+            if (ev.button.button == SDL_BUTTON_LEFT) {
+                m_fireHeld = true;
+                m_firePressedEdge = true;
+            }
             break;
 
-        case SDL_KEYUP:
-            if (ev.key.keysym.sym == SDLK_SPACE)
-                m_jumpPressed = false;
+        case SDL_MOUSEBUTTONUP:
+            if (ev.button.button == SDL_BUTTON_LEFT)
+                m_fireHeld = false;
             break;
 
         case SDL_MOUSEMOTION:
@@ -248,17 +294,34 @@ void Engine::ProcessEvents() {
                 int h = ev.window.data2;
                 m_renderer.Resize(w, h);
                 m_camera.aspect = (float)w / (float)h;
+                m_cfg.width = w; m_cfg.height = h;
+                if (m_hud) m_hud->SetScreenSize(w, h);
             }
             break;
         }
     }
 }
 
+void Engine::SwitchWeapon(int slot) {
+    if (slot < 0 || slot >= 6)            return;
+    if (m_weapons[slot].id == WEAPON_NONE) return;
+    if (slot == m_activeSlot)             return;
+
+    m_activeSlot = slot;
+    SetViewModel(m_weapons[slot].id);
+
+    // Draw animation
+    if (m_viewModel) {
+        int seq = m_viewModel->FindSequence("draw");
+        if (seq < 0) seq = m_viewModel->FindSequence("deploy");
+        if (seq >= 0) { m_vmSequence = seq; m_vmFrame = 0; m_vmLoop = false; }
+    }
+}
+
 void Engine::BuildPlayerInput(const uint8_t* keys, PlayerInput& inp) {
-    Vec3 fwd = m_camera.Forward();
+    Vec3 fwd   = m_camera.Forward();
     Vec3 right = m_camera.Right();
 
-    // Zero out Z for ground movement
     Vec3 moveF = { fwd.x, fwd.y, 0 };
     Vec3 moveR = { right.x, right.y, 0 };
 
@@ -268,11 +331,16 @@ void Engine::BuildPlayerInput(const uint8_t* keys, PlayerInput& inp) {
     if (keys[SDL_SCANCODE_D]) sideMove += 1;
     if (keys[SDL_SCANCODE_A]) sideMove -= 1;
 
+    // CS 1.6: max speed is weapon-dependent
+    float maxSpeed = CVarSystem::Instance().GetFloat("sv_maxspeed", 320.0f);
+    const WeaponDef* def = WeaponDatabase::Get(m_weapons[m_activeSlot].id);
+    if (def) maxSpeed = std::min(maxSpeed, def->maxPlayerSpeed);
+
     Vec3 wish = moveF * fwdMove + moveR * sideMove;
     float wishLen = wish.Length();
     if (wishLen > kEpsilon) {
         inp.wishDir   = wish / wishLen;
-        inp.wishSpeed = CVarSystem::Instance().GetFloat("sv_maxspeed", 320.0f);
+        inp.wishSpeed = maxSpeed;
     } else {
         inp.wishDir   = {};
         inp.wishSpeed = 0;
@@ -280,11 +348,53 @@ void Engine::BuildPlayerInput(const uint8_t* keys, PlayerInput& inp) {
 
     inp.forwardMove = fwdMove;
     inp.sideMove    = sideMove;
-    inp.jumpPressed = m_jumpPressed;
-    inp.duckPressed = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_LSHIFT];
+    inp.jumpPressed = keys[SDL_SCANCODE_SPACE];
+    inp.duckPressed = keys[SDL_SCANCODE_LCTRL];
+    inp.walkPressed = keys[SDL_SCANCODE_LSHIFT];
+}
+
+void Engine::UpdateWeapon(float dt) {
+    WeaponState& ws = m_weapons[m_activeSlot];
+    if (ws.id == WEAPON_NONE) return;
+
+    m_weaponSys.Update(ws, m_gameTime, dt);
+
+    if (!m_collision) return;
+
+    ShooterContext ctx;
+    ctx.eyePos     = m_camera.origin;
+    ctx.viewAngles = m_camera.angles;
+    ctx.viewAngles.pitch -= m_punchPitch; // recoil punch raises aim
+    ctx.velocity2D = m_localPlayer.physState.velocity.Length2D();
+    ctx.onGround   = m_localPlayer.physState.onGround;
+    ctx.ducking    = m_localPlayer.physState.ducking;
+    ctx.time       = m_gameTime;
+
+    std::vector<ShootTarget> targets; // bots/players: Phase 3
+
+    TraceFn trace = MakeTraceFn(*m_collision);
+    FireEvent ev = m_weaponSys.TryFire(ws, ctx, m_fireHeld, m_firePressedEdge,
+                                        trace, targets);
+
+    if (ev.fired) {
+        const WeaponDef* def = WeaponDatabase::Get(ws.id);
+        if (def) PlayWeaponSound(def->fireSound);
+
+        m_punchPitch += ev.punchPitch;
+
+        // Shoot animation
+        if (m_viewModel) {
+            int seq = m_viewModel->FindSequence("shoot");
+            if (seq < 0) seq = m_viewModel->FindSequence("fire");
+            if (seq >= 0) { m_vmSequence = seq; m_vmFrame = 0; m_vmLoop = false; }
+        }
+    } else if (ev.dryFire) {
+        PlayWeaponSound("sound/weapons/dryfire_pistol.wav");
+    }
 }
 
 void Engine::Update(float dt) {
+    m_gameTime += dt;
     const uint8_t* keys = SDL_GetKeyboardState(nullptr);
 
     if (m_playerMove && m_currentBSP) {
@@ -293,41 +403,115 @@ void Engine::Update(float dt) {
 
         m_playerMove->Move(m_localPlayer.physState, inp, dt);
 
-        // Sync camera to player eye position
         m_camera.origin = m_localPlayer.eyePosition();
-        // Preserve camera yaw/pitch (set by mouse look)
         m_localPlayer.physState.angles = m_camera.angles;
     }
 
-    // Update audio listener
+    UpdateWeapon(dt);
+
+    // Grenade simulation
+    if (m_collision) {
+        std::vector<GrenadeExplosion> explosions;
+        TraceFn trace = MakeTraceFn(*m_collision);
+        float gravity = CVarSystem::Instance().GetFloat("sv_gravity", 800);
+        m_grenades.Update(dt, gravity, trace, explosions);
+
+        for (const auto& ex : explosions) {
+            if (ex.type == GrenadeType::HE) {
+                PlayWeaponSound("sound/weapons/hegrenade-1.wav");
+                // Self damage
+                float dist = Distance(ex.origin, m_localPlayer.physState.origin);
+                float dmg = GrenadeSystem::HEDamage(dist);
+                if (dmg > 0) m_localPlayer.TakeDamage(dmg, DMG_BLAST);
+            } else if (ex.type == GrenadeType::Flash) {
+                PlayWeaponSound("sound/weapons/flashbang-2.wav");
+            }
+        }
+    }
+
+    // Recoil punch decay
+    if (m_punchPitch > 0) {
+        m_punchPitch = std::max(0.0f, m_punchPitch - dt * 20.0f);
+    }
+
+    // Viewmodel animation advance
+    if (m_viewModel && m_vmSequence >= 0 &&
+        m_vmSequence < (int)m_viewModel->sequences.size()) {
+        const MDLSequence& seq = m_viewModel->sequences[m_vmSequence];
+        m_vmFrame += seq.fps * dt;
+        float maxF = (float)std::max(0, seq.numFrames - 1);
+        if (m_vmFrame >= maxF) {
+            if (m_vmLoop || (seq.flags & MDL_SEQ_LOOPING)) {
+                m_vmFrame = maxF > 0 ? std::fmod(m_vmFrame, maxF) : 0;
+            } else {
+                // Return to idle
+                int idle = m_viewModel->FindSequence("idle");
+                m_vmSequence = idle >= 0 ? idle : 0;
+                m_vmFrame    = 0;
+                m_vmLoop     = true;
+            }
+        }
+    }
+
+    // Game rules tick
+    std::vector<Player> players { m_localPlayer };
+    m_rules.Update(dt, players);
+    m_localPlayer = players[0];
+
     m_audio.SetListener(m_camera.origin,
                         m_camera.Forward(),
                         m_camera.Right(),
                         m_camera.Up());
+}
 
-    m_jumpPressed = false; // consumed
+void Engine::RenderViewModel() {
+    if (!m_viewModel) return;
+
+    std::vector<Mat4> bones;
+    MDLAnimator::ComputeBones(*m_viewModel, m_vmSequence, m_vmFrame, bones);
+
+    // Viewmodel rendered at eye origin with view angles
+    // (GoldSrc studio space: X forward, Y left, Z up)
+    Vec3 f = m_camera.Forward();
+    Vec3 r = m_camera.Right();
+    Vec3 u = m_camera.Up();
+
+    Mat4 model;
+    model(0,0) = f.x; model(0,1) = -r.x; model(0,2) = u.x; model(0,3) = m_camera.origin.x;
+    model(1,0) = f.y; model(1,1) = -r.y; model(1,2) = u.y; model(1,3) = m_camera.origin.y;
+    model(2,0) = f.z; model(2,1) = -r.z; model(2,2) = u.z; model(2,3) = m_camera.origin.z;
+    model(3,3) = 1.0f;
+
+    // Clear depth so the viewmodel never clips into walls
+    m_renderer.ClearDepth();
+    m_renderer.RenderMDL(*m_viewModel, bones, model,
+                         m_camera.ViewProjection(), m_texCache);
 }
 
 void Engine::Render() {
     m_renderer.BeginFrame();
 
     if (m_currentBSP && m_bspGPU.ready) {
-        Mat4 vp = m_camera.ViewProjection();
-        m_renderer.RenderWorld(*m_currentBSP, vp, m_camera.origin);
+        // Apply recoil punch to view
+        Camera punched = m_camera;
+        punched.angles.pitch -= m_punchPitch;
+
+        Mat4 vp = punched.ViewProjection();
+        m_renderer.RenderWorld(*m_currentBSP, vp, punched.origin);
+
+        RenderViewModel();
     } else {
-        // Show startup message
         m_renderer.Draw2DRect({10, 10}, {300, 30}, {0,0,0,0.7f});
-        m_renderer.Draw2DText("OpenStrike - No map loaded", {15, 15}, 14, {1,1,1,1});
     }
 
-    // HUD (minimal for now)
-    if (m_localPlayer.alive) {
-        // Health bar background
-        m_renderer.Draw2DRect({10, (float)(m_cfg.height - 40)}, {200, 24}, {0,0,0,0.5f});
-        // Health bar fill
-        float healthFrac = m_localPlayer.health / 100.0f;
-        m_renderer.Draw2DRect({12, (float)(m_cfg.height - 38)},
-                              {196 * healthFrac, 20}, {0.2f, 0.8f, 0.2f, 1.0f});
+    // HUD
+    if (m_hud) {
+        // Crosshair gap widens with movement/firing (CS-style)
+        float gap = 4.0f;
+        gap += m_localPlayer.physState.velocity.Length2D() * 0.02f;
+        gap += m_punchPitch * 2.0f;
+        m_hud->Draw(m_localPlayer, m_weapons[m_activeSlot],
+                    m_rules.State(), gap);
     }
 
     SDL_GL_SwapWindow(m_window);

@@ -7,6 +7,8 @@ namespace OS {
 
 WeaponDef WeaponDatabase::s_defs[WEAPON_COUNT] = {};
 
+void WeaponDatabaseInitRuntime(WeaponDef* defs);
+
 static void Def(WeaponDef& d, WeaponID id, const char* name, const char* display,
                 WeaponSlot slot, int cost, int clipSize, int maxAmmo,
                 float fireRate, FireMode fm, float reload, float draw,
@@ -177,6 +179,48 @@ void WeaponDatabase::Init() {
     s_defs[WEAPON_C4].displayName = "C4 Explosive";
     s_defs[WEAPON_C4].slot = SLOT_C4;
     s_defs[WEAPON_C4].cost = 0;
+
+    WeaponDatabaseInitRuntime(s_defs);
+}
+
+// CS 1.6 per-weapon movement speeds and fire sound filenames.
+// Speeds from public community measurements; sound paths reference files
+// in the user's own CS install (no assets shipped).
+static void SetRuntime(WeaponDef& d, float speed, const char* sound) {
+    d.maxPlayerSpeed = speed;
+    d.fireSound      = sound;
+}
+
+void WeaponDatabaseInitRuntime(WeaponDef* defs) {
+    SetRuntime(defs[WEAPON_USP],       250, "sound/weapons/usp_unsil-1.wav");
+    SetRuntime(defs[WEAPON_GLOCK],     250, "sound/weapons/glock18-2.wav");
+    SetRuntime(defs[WEAPON_DEAGLE],    250, "sound/weapons/deagle-1.wav");
+    SetRuntime(defs[WEAPON_P228],      250, "sound/weapons/p228-1.wav");
+    SetRuntime(defs[WEAPON_FIVESEVEN], 250, "sound/weapons/fiveseven-1.wav");
+    SetRuntime(defs[WEAPON_ELITES],    250, "sound/weapons/elite_fire.wav");
+    SetRuntime(defs[WEAPON_MP5],       250, "sound/weapons/mp5-1.wav");
+    SetRuntime(defs[WEAPON_TMP],       250, "sound/weapons/tmp-1.wav");
+    SetRuntime(defs[WEAPON_P90],       245, "sound/weapons/p90-1.wav");
+    SetRuntime(defs[WEAPON_MAC10],     250, "sound/weapons/mac10-1.wav");
+    SetRuntime(defs[WEAPON_UMP45],     250, "sound/weapons/ump45-1.wav");
+    SetRuntime(defs[WEAPON_AK47],      221, "sound/weapons/ak47-1.wav");
+    SetRuntime(defs[WEAPON_M4A1],      230, "sound/weapons/m4a1_unsil-1.wav");
+    SetRuntime(defs[WEAPON_SG552],     235, "sound/weapons/sg552-1.wav");
+    SetRuntime(defs[WEAPON_GALIL],     240, "sound/weapons/galil-1.wav");
+    SetRuntime(defs[WEAPON_FAMAS],     240, "sound/weapons/famas-1.wav");
+    SetRuntime(defs[WEAPON_AUG],       240, "sound/weapons/aug-1.wav");
+    SetRuntime(defs[WEAPON_AWP],       210, "sound/weapons/awp1.wav");
+    SetRuntime(defs[WEAPON_SCOUT],     260, "sound/weapons/scout_fire-1.wav");
+    SetRuntime(defs[WEAPON_SG550],     210, "sound/weapons/sg550-1.wav");
+    SetRuntime(defs[WEAPON_G3SG1],     215, "sound/weapons/g3sg1-1.wav");
+    SetRuntime(defs[WEAPON_M3],        230, "sound/weapons/m3-1.wav");
+    SetRuntime(defs[WEAPON_XM1014],    240, "sound/weapons/xm1014-1.wav");
+    SetRuntime(defs[WEAPON_M249],      220, "sound/weapons/m249-1.wav");
+    SetRuntime(defs[WEAPON_KNIFE],     250, "sound/weapons/knife_slash1.wav");
+    SetRuntime(defs[WEAPON_C4],        250, "");
+    SetRuntime(defs[WEAPON_FLASHBANG],    245, "");
+    SetRuntime(defs[WEAPON_HEGRENADE],    245, "");
+    SetRuntime(defs[WEAPON_SMOKEGRENADE], 245, "");
 }
 
 const WeaponDef* WeaponDatabase::Get(WeaponID id) {

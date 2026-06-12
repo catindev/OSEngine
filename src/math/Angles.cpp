@@ -57,7 +57,55 @@ Angles Angles::Normalized() const {
     return { p, NormAngle(yaw), NormAngle(roll) };
 }
 
+// ─── Quat ─────────────────────────────────────────────────────────────────────
+
+Quat Quat::FromEulerXYZ(Vec3 e) {
+    // GoldSrc AngleQuaternion: half-angle sin/cos products
+    float sx = std::sin(e.x * 0.5f), cx = std::cos(e.x * 0.5f);
+    float sy = std::sin(e.y * 0.5f), cy = std::cos(e.y * 0.5f);
+    float sz = std::sin(e.z * 0.5f), cz = std::cos(e.z * 0.5f);
+
+    return {
+        sx*cy*cz - cx*sy*sz, // x
+        cx*sy*cz + sx*cy*sz, // y
+        cx*cy*sz - sx*sy*cz, // z
+        cx*cy*cz + sx*sy*sz, // w
+    };
+}
+
+Quat Quat::Slerp(Quat a, Quat b, float t) {
+    // Take shortest path
+    float d = a.Dot(b);
+    if (d < 0) { b = {-b.x, -b.y, -b.z, -b.w}; d = -d; }
+
+    if (d > 0.9995f) {
+        // Nearly parallel: lerp + normalize
+        Quat r{ Lerp(a.x,b.x,t), Lerp(a.y,b.y,t), Lerp(a.z,b.z,t), Lerp(a.w,b.w,t) };
+        return r.Normalized();
+    }
+
+    float theta  = std::acos(Clamp(d, -1.0f, 1.0f));
+    float sinT   = std::sin(theta);
+    float wa = std::sin((1.0f - t) * theta) / sinT;
+    float wb = std::sin(t * theta) / sinT;
+    return { a.x*wa + b.x*wb, a.y*wa + b.y*wb, a.z*wa + b.z*wb, a.w*wa + b.w*wb };
+}
+
 // ─── Mat4 ─────────────────────────────────────────────────────────────────────
+
+Mat4 Mat4::FromQuatPos(const Quat& q, Vec3 pos) {
+    Mat4 m;
+    float xx = q.x*q.x, yy = q.y*q.y, zz = q.z*q.z;
+    float xy = q.x*q.y, xz = q.x*q.z, yz = q.y*q.z;
+    float wx = q.w*q.x, wy = q.w*q.y, wz = q.w*q.z;
+
+    m(0,0) = 1 - 2*(yy + zz); m(0,1) = 2*(xy - wz);     m(0,2) = 2*(xz + wy);
+    m(1,0) = 2*(xy + wz);     m(1,1) = 1 - 2*(xx + zz); m(1,2) = 2*(yz - wx);
+    m(2,0) = 2*(xz - wy);     m(2,1) = 2*(yz + wx);     m(2,2) = 1 - 2*(xx + yy);
+
+    m(0,3) = pos.x; m(1,3) = pos.y; m(2,3) = pos.z;
+    return m;
+}
 
 Mat4 Mat4::operator*(const Mat4& o) const {
     Mat4 r;

@@ -6,12 +6,15 @@
 #include "Camera.h"
 #include "Config.h"
 #include "AssetManager.h"
+#include "HUD.h"
 #include "../renderer/GLRenderer.h"
 #include "../physics/Movement.h"
 #include "../physics/Collision.h"
 #include "../audio/Audio.h"
 #include "../game/GameRules.h"
 #include "../game/Player.h"
+#include "../game/WeaponSystem.h"
+#include "../game/Projectile.h"
 
 struct SDL_Window;
 
@@ -52,6 +55,12 @@ private:
     void Render();
 
     void BuildPlayerInput(const uint8_t* keys, PlayerInput& inp);
+    void UpdateWeapon(float dt);
+    void RenderViewModel();
+    void SwitchWeapon(int slot);
+    void GiveDefaultLoadout();
+    void SetViewModel(WeaponID id);
+    void PlayWeaponSound(const std::string& gamePath);
 
     EngineConfig  m_cfg;
     SDL_Window*   m_window  = nullptr;
@@ -62,6 +71,7 @@ private:
     GLRenderer    m_renderer;
     Camera        m_camera;
     GameRules     m_rules;
+    std::unique_ptr<HUD> m_hud;
 
     // Currently loaded map
     const BSPFile*    m_currentBSP = nullptr;
@@ -70,16 +80,29 @@ private:
     std::unique_ptr<CollisionSystem> m_collision;
     std::unique_ptr<PlayerMove>      m_playerMove;
 
-    // Local player
-    Player       m_localPlayer;
+    // Local player + combat
+    Player        m_localPlayer;
+    WeaponSystem  m_weaponSys;
+    GrenadeSystem m_grenades;
+    WeaponState   m_weapons[6];        // by WeaponSlot
+    int           m_activeSlot = (int)SLOT_KNIFE;
+    float         m_gameTime   = 0;
 
-    bool         m_running     = false;
-    bool         m_mouseLocked = false;
+    // Viewmodel
+    const MDLFile* m_viewModel = nullptr;
+    int            m_vmSequence = 0;
+    float          m_vmFrame    = 0;
+    bool           m_vmLoop     = true;
 
-    // Input state
-    float        m_mouseX = 0, m_mouseY = 0;
-    bool         m_jumpPressed = false;
-    bool         m_duckPressed = false;
+    // View punch (recoil applied to camera, decays)
+    float         m_punchPitch = 0;
+
+    bool          m_running     = false;
+    bool          m_mouseLocked = false;
+
+    // Input edge detection
+    bool          m_firePressedEdge = false;
+    bool          m_fireHeld        = false;
 };
 
 } // namespace OS

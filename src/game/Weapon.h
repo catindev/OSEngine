@@ -84,6 +84,10 @@ struct WeaponDef {
     bool         canZoom     = false;
     float        zoomFOV1    = 40; // first zoom level
     float        zoomFOV2    = 20; // second zoom level (AWP)
+    // Player max speed while holding this weapon (CS 1.6 per-weapon speeds)
+    float        maxPlayerSpeed = 250.0f;
+    // Sound file (game-relative path into user's CS install)
+    std::string  fireSound;
     // Model paths
     std::string  modelV;   // v_model (first-person)
     std::string  modelP;   // p_model (third-person)

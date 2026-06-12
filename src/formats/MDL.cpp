@@ -1,8 +1,23 @@
 #include "MDL.h"
 #include <fstream>
 #include <cstring>
+#include <cctype>
+#include <algorithm>
 
 namespace OS {
+
+int MDLFile::FindSequence(const std::string& substr) const {
+    auto lower = [](std::string s) {
+        for (char& c : s) c = (char)std::tolower((unsigned char)c);
+        return s;
+    };
+    std::string needle = lower(substr);
+    for (size_t i = 0; i < sequences.size(); i++) {
+        if (lower(sequences[i].name).find(needle) != std::string::npos)
+            return (int)i;
+    }
+    return -1;
+}
 
 MDLFile MDLLoader::Load(const std::string& path) {
     MDLFile mdl;
@@ -34,9 +49,13 @@ MDLFile MDLLoader::Load(const std::string& path) {
 
     ParseBones    (mdl, data.data(), hdr);
     ParseTextures (mdl, data.data(), hdr);
+    ParseSkins    (mdl, data.data(), hdr);
     ParseSequences(mdl, data.data(), hdr);
     ParseBodyParts(mdl, data.data(), hdr);
     ParseHitBoxes (mdl, data.data(), hdr);
+
+    // Keep raw bytes for animation decoding
+    mdl.rawData = std::move(data);
 
     mdl.valid = true;
     return mdl;
@@ -49,13 +68,19 @@ void MDLLoader::ParseBones(MDLFile& mdl, const uint8_t* data, const MDLRawHeader
         mdl.bones[i].name   = std::string(raw[i].name, strnlen(raw[i].name, 32));
         mdl.bones[i].parent = raw[i].parent;
         mdl.bones[i].flags  = raw[i].flags;
-        mdl.bones[i].posScale[0] = raw[i].scale[0];
-        mdl.bones[i].posScale[1] = raw[i].scale[1];
-        mdl.bones[i].posScale[2] = raw[i].scale[2];
-        mdl.bones[i].rotScale[0] = raw[i].scale[3];
-        mdl.bones[i].rotScale[1] = raw[i].scale[4];
-        mdl.bones[i].rotScale[2] = raw[i].scale[5];
+        for (int d = 0; d < 6; d++) {
+            mdl.bones[i].defValue[d] = raw[i].value[d];
+            mdl.bones[i].scale[d]    = raw[i].scale[d];
+        }
     }
+}
+
+void MDLLoader::ParseSkins(MDLFile& mdl, const uint8_t* data, const MDLRawHeader* hdr) {
+    mdl.numSkinRef = hdr->numSkinRef;
+    int total = hdr->numSkinRef * hdr->numSkinFamilies;
+    if (total <= 0) return;
+    const int16_t* raw = reinterpret_cast<const int16_t*>(data + hdr->skinIndex);
+    mdl.skinTable.assign(raw, raw + total);
 }
 
 void MDLLoader::ParseTextures(MDLFile& mdl, const uint8_t* data, const MDLRawHeader* hdr) {
@@ -93,11 +118,100 @@ void MDLLoader::ParseSequences(MDLFile& mdl, const uint8_t* data, const MDLRawHe
         mdl.sequences[i].fps       = raw[i].fps;
         mdl.sequences[i].numFrames = raw[i].numFrames;
         mdl.sequences[i].flags     = raw[i].flags;
+        mdl.sequences[i].animIndex = raw[i].animIndex;
+        mdl.sequences[i].numBlends = raw[i].numBlends;
         mdl.sequences[i].linearMovement = {
             raw[i].linearMovement[0],
             raw[i].linearMovement[1],
             raw[i].linearMovement[2]
         };
+    }
+}
+
+// ─── Animation decoding ───────────────────────────────────────────────────────
+// GoldSrc anim data layout (public format docs):
+//   seq.animIndex → array of per-bone anim structs (blend 0):
+//     struct anim { uint16 offset[6]; }  // X,Y,Z,XR,YR,ZR channels
+//   offset == 0   → channel constant (bone default value)
+//   offset != 0   → RLE stream of animvalue relative to that bone's anim struct:
+//     union animvalue { struct { uint8 valid, total; } num; int16 value; }
+//   A run covers `total` frames; first `valid` frames have explicit values,
+//   remaining frames repeat the last explicit value.
+
+#pragma pack(push,1)
+struct MDLRawAnim { uint16_t offset[6]; };
+union MDLAnimValue {
+    struct { uint8_t valid, total; } num;
+    int16_t value;
+};
+#pragma pack(pop)
+
+static int16_t DecodeAnimValue(const MDLRawAnim* panim, int dof, int frame) {
+    const auto* pv = reinterpret_cast<const MDLAnimValue*>(
+        reinterpret_cast<const uint8_t*>(panim) + panim->offset[dof]);
+
+    int f = frame;
+    while (pv->num.total <= f) {
+        f -= pv->num.total;
+        pv += pv->num.valid + 1;
+        if (pv->num.total == 0) return 0; // corrupt stream guard
+    }
+    if (pv->num.valid > f)
+        return pv[f + 1].value;
+    return pv[pv->num.valid].value;
+}
+
+static void BoneFramePose(const MDLBone& bone, const MDLRawAnim* panim,
+                           int frame, Vec3& pos, Quat& rot) {
+    float v[6];
+    for (int d = 0; d < 6; d++) {
+        v[d] = bone.defValue[d];
+        if (panim && panim->offset[d] != 0)
+            v[d] += DecodeAnimValue(panim, d, frame) * bone.scale[d];
+    }
+    pos = { v[0], v[1], v[2] };
+    rot = Quat::FromEulerXYZ({ v[3], v[4], v[5] });
+}
+
+void MDLAnimator::ComputeBones(const MDLFile& mdl, int sequence, float frame,
+                                std::vector<Mat4>& out) {
+    out.resize(mdl.bones.size());
+    if (mdl.bones.empty()) return;
+
+    const MDLRawAnim* anims = nullptr;
+    int f0 = 0, f1 = 0;
+    float frac = 0;
+
+    if (sequence >= 0 && sequence < (int)mdl.sequences.size() && !mdl.rawData.empty()) {
+        const MDLSequence& seq = mdl.sequences[sequence];
+        int maxFrame = std::max(0, seq.numFrames - 1);
+        f0 = std::min((int)frame, maxFrame);
+        f1 = std::min(f0 + 1,     maxFrame);
+        frac = frame - (float)f0;
+        if (seq.animIndex > 0 &&
+            (size_t)seq.animIndex + mdl.bones.size() * sizeof(MDLRawAnim) <= mdl.rawData.size()) {
+            anims = reinterpret_cast<const MDLRawAnim*>(mdl.rawData.data() + seq.animIndex);
+        }
+    }
+
+    std::vector<Mat4> local(mdl.bones.size());
+    for (size_t b = 0; b < mdl.bones.size(); b++) {
+        const MDLRawAnim* pa = anims ? &anims[b] : nullptr;
+
+        Vec3 p0, p1; Quat q0, q1;
+        BoneFramePose(mdl.bones[b], pa, f0, p0, q0);
+        if (f1 != f0 && frac > 0.001f) {
+            BoneFramePose(mdl.bones[b], pa, f1, p1, q1);
+            p0 = Lerp(p0, p1, frac);
+            q0 = Quat::Slerp(q0, q1, frac);
+        }
+        local[b] = Mat4::FromQuatPos(q0, p0);
+    }
+
+    // Chain to parents (bones are sorted parent-first in MDL)
+    for (size_t b = 0; b < mdl.bones.size(); b++) {
+        int parent = mdl.bones[b].parent;
+        out[b] = (parent >= 0) ? out[parent] * local[b] : local[b];
     }
 }
 
@@ -122,6 +236,14 @@ void MDLLoader::ParseBodyParts(MDLFile& mdl, const uint8_t* data, const MDLRawHe
                 MDLMesh mesh;
                 mesh.skinRef = meshData[mshi].skinRef;
 
+                // Texture dimensions for UV normalization
+                float texW = 1.0f, texH = 1.0f;
+                int texIdx = mdl.SkinTexture(mesh.skinRef);
+                if (texIdx >= 0 && texIdx < (int)mdl.textures.size()) {
+                    texW = std::max(1.0f, (float)mdl.textures[texIdx].width);
+                    texH = std::max(1.0f, (float)mdl.textures[texIdx].height);
+                }
+
                 // GoldSrc uses trivial triangle strips/fans encoded as short triplets
                 // triIndex points to array of: vertex[s/t], vertex[index], ... ending with 0
                 const int16_t* tris = reinterpret_cast<const int16_t*>(data + meshData[mshi].triIndex);
@@ -142,7 +264,7 @@ void MDLLoader::ParseBodyParts(MDLFile& mdl, const uint8_t* data, const MDLRawHe
                         MDLVertex v;
                         v.pos    = { verts[vi*3], verts[vi*3+1], verts[vi*3+2] };
                         v.normal = { normals[ni*3], normals[ni*3+1], normals[ni*3+2] };
-                        v.uv     = { (float)si, (float)ti }; // divided by texture dims later
+                        v.uv     = { (float)si / texW, (float)ti / texH };
                         v.bone   = vertBones[vi];
                         mesh.verts.push_back(v);
                     }

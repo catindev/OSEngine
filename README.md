@@ -94,11 +94,17 @@ tests/
 | CS 1.6 weapon parameters | ✅ Phase 1 |
 | Round/economy system | ✅ Phase 1 |
 | 3D audio | ✅ Phase 1 |
-| Bot AI | 🔲 Phase 2 |
-| Networking | 🔲 Phase 2 |
-| Metal renderer (macOS) | 🔲 Phase 2 |
-| HUD (full) | 🔲 Phase 2 |
-| Weapon animation | 🔲 Phase 2 |
+| MDL skeletal animation | ✅ Phase 2 |
+| Viewmodel rendering (v_ models) | ✅ Phase 2 |
+| Weapon firing (spread/recoil/damage) | ✅ Phase 2 |
+| Grenade physics | ✅ Phase 2 |
+| HUD (crosshair, health, ammo, money, timer) | ✅ Phase 2 |
+| Per-weapon movement speeds | ✅ Phase 2 |
+| Bot AI | 🔲 Phase 3 |
+| Networking | 🔲 Phase 3 |
+| Metal renderer (macOS) | 🔲 Phase 3 |
+| Buy menu | 🔲 Phase 3 |
+| Player model rendering | 🔲 Phase 3 |
 
 ## Legal
 

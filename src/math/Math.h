@@ -102,6 +102,38 @@ struct Vec4 {
     Vec3 XYZ() const { return {x,y,z}; }
 };
 
+// ─── Quat (for skeletal animation, GoldSrc bone rotations) ──────────────────
+
+struct Quat {
+    float x = 0, y = 0, z = 0, w = 1;
+
+    Quat() = default;
+    Quat(float x, float y, float z, float w) : x(x), y(y), z(z), w(w) {}
+
+    // From Euler XYZ in radians (GoldSrc AngleQuaternion convention:
+    // e.x = roll around X, e.y = pitch around Y, e.z = yaw around Z)
+    static Quat FromEulerXYZ(Vec3 e);
+
+    Quat operator*(const Quat& o) const {
+        return {
+            w*o.x + x*o.w + y*o.z - z*o.y,
+            w*o.y - x*o.z + y*o.w + z*o.x,
+            w*o.z + x*o.y - y*o.x + z*o.w,
+            w*o.w - x*o.x - y*o.y - z*o.z,
+        };
+    }
+
+    float Dot(const Quat& o) const { return x*o.x + y*o.y + z*o.z + w*o.w; }
+
+    Quat Normalized() const {
+        float l = std::sqrt(Dot(*this));
+        if (l < kEpsilon) return {};
+        return { x/l, y/l, z/l, w/l };
+    }
+
+    static Quat Slerp(Quat a, Quat b, float t);
+};
+
 // ─── Angles (pitch/yaw/roll in degrees, GoldSrc convention) ─────────────────
 // pitch: rotation around Y (up/down),  positive = down
 // yaw:   rotation around Z (left/right), positive = counterclockwise
@@ -152,6 +184,27 @@ struct Mat4 {
 
     // GoldSrc view matrix from position + angles
     static Mat4 View(Vec3 origin, const Angles& angles);
+
+    // Rigid transform from quaternion rotation + translation
+    static Mat4 FromQuatPos(const Quat& q, Vec3 pos);
+
+    // Transform a point (w=1)
+    Vec3 TransformPoint(Vec3 p) const {
+        return {
+            m[0]*p.x + m[4]*p.y + m[8] *p.z + m[12],
+            m[1]*p.x + m[5]*p.y + m[9] *p.z + m[13],
+            m[2]*p.x + m[6]*p.y + m[10]*p.z + m[14],
+        };
+    }
+
+    // Transform a direction (w=0)
+    Vec3 TransformDir(Vec3 d) const {
+        return {
+            m[0]*d.x + m[4]*d.y + m[8] *d.z,
+            m[1]*d.x + m[5]*d.y + m[9] *d.z,
+            m[2]*d.x + m[6]*d.y + m[10]*d.z,
+        };
+    }
 
     const float* Data() const { return m; }
 };

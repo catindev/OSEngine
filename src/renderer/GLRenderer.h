@@ -48,6 +48,20 @@ public:
                      const Mat4& modelMatrix,
                      const Mat4& viewProjection) override;
 
+    // Render an MDL with skeletal pose (CPU skinning).
+    // bones: model-space bone transforms from MDLAnimator::ComputeBones.
+    void RenderMDL(const MDLFile& mdl,
+                   const std::vector<Mat4>& bones,
+                   const Mat4& modelMatrix,
+                   const Mat4& viewProjection,
+                   TextureCache& texCache);
+
+    // Clear depth buffer (for viewmodel rendering on top of world)
+    void ClearDepth();
+
+    // Set the GPU BSP data used by RenderWorld
+    void SetCurrentBSP(const GLBSPData* bsp) { m_currentBSP = bsp; }
+
     void Draw2DRect(Vec2 pos, Vec2 size, Vec4 color) override;
     void Draw2DTexture(TextureHandle tex, Vec2 pos, Vec2 size) override;
     void Draw2DText(const std::string& text, Vec2 pos, float size, Vec4 color) override;
@@ -75,6 +89,13 @@ private:
     // 2D rendering
     uint32_t m_quadVAO = 0;
     uint32_t m_quadVBO = 0;
+
+    // Dynamic buffers for CPU-skinned MDL rendering
+    uint32_t m_mdlVAO = 0;
+    uint32_t m_mdlVBO = 0;
+    uint32_t m_mdlEBO = 0;
+    size_t   m_mdlVBOSize = 0;
+    size_t   m_mdlEBOSize = 0;
 
     // Fallback 1x1 white texture
     TextureHandle m_whiteTexture = INVALID_TEXTURE;

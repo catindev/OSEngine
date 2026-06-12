@@ -155,8 +155,8 @@ struct MDLBone {
     std::string name;
     int         parent = -1;
     int         flags  = 0;
-    float       posScale[3]; // scale for position animation data
-    float       rotScale[3]; // scale for rotation animation data
+    float       defValue[6]; // default DOF values: X,Y,Z,XR,YR,ZR
+    float       scale[6];    // animation data scale per DOF
 };
 
 struct MDLTexture {
@@ -192,7 +192,8 @@ struct MDLSequence {
     int         numFrames = 0;
     int         flags     = 0;
     Vec3        linearMovement;
-    // Animation data loaded on demand
+    int32_t     animIndex = 0; // offset into raw file data (blend 0)
+    int32_t     numBlends = 1;
 };
 
 struct MDLHitBox {
@@ -213,8 +214,32 @@ struct MDLFile {
     std::vector<MDLSequence> sequences;
     std::vector<MDLHitBox>   hitBoxes;
 
+    // Skin table: skinTable[family * numSkinRef + skinRef] = texture index
+    std::vector<int16_t> skinTable;
+    int                  numSkinRef = 0;
+
+    // Raw file bytes kept for on-demand animation decoding
+    std::vector<uint8_t> rawData;
+
     bool valid = false;
     std::string error;
+
+    // Find sequence index whose label contains substr (case-insensitive); -1 if none
+    int FindSequence(const std::string& substr) const;
+
+    // Resolve texture index for a mesh skinRef (family 0)
+    int SkinTexture(int skinRef) const {
+        if (skinRef >= 0 && skinRef < (int)skinTable.size())
+            return skinTable[skinRef];
+        return skinRef; // fallback: direct index
+    }
+};
+
+// Computes model-space bone transforms for a sequence at a (fractional) frame.
+class MDLAnimator {
+public:
+    static void ComputeBones(const MDLFile& mdl, int sequence, float frame,
+                             std::vector<Mat4>& out);
 };
 
 class MDLLoader {
@@ -227,6 +252,7 @@ private:
     static void ParseBodyParts(MDLFile& mdl, const uint8_t* data, const MDLRawHeader* hdr);
     static void ParseSequences(MDLFile& mdl, const uint8_t* data, const MDLRawHeader* hdr);
     static void ParseHitBoxes(MDLFile& mdl, const uint8_t* data, const MDLRawHeader* hdr);
+    static void ParseSkins   (MDLFile& mdl, const uint8_t* data, const MDLRawHeader* hdr);
 };
 
 } // namespace OS

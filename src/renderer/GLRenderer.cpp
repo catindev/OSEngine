@@ -1,7 +1,9 @@
 #include "GLRenderer.h"
+#include "../formats/MDL.h"
 #include <glad/glad.h>
 #include <cstring>
 #include <cstdio>
+#include <string>
 
 namespace OS {
 
@@ -224,8 +226,15 @@ void GLRenderer::Shutdown() {
     if (m_modelShader) glDeleteProgram(m_modelShader);
     if (m_uiShader)    glDeleteProgram(m_uiShader);
     if (m_quadVAO) { glDeleteVertexArrays(1, &m_quadVAO); glDeleteBuffers(1, &m_quadVBO); }
+    if (m_mdlVAO) {
+        glDeleteVertexArrays(1, &m_mdlVAO);
+        glDeleteBuffers(1, &m_mdlVBO);
+        glDeleteBuffers(1, &m_mdlEBO);
+    }
     m_worldShader = m_modelShader = m_uiShader = 0;
     m_quadVAO = m_quadVBO = 0;
+    m_mdlVAO = m_mdlVBO = m_mdlEBO = 0;
+    m_mdlVBOSize = m_mdlEBOSize = 0;
 }
 
 void GLRenderer::Resize(int width, int height) {
@@ -435,8 +444,129 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
 void GLRenderer::RenderModel(const MDLFile& mdl,
                               const Mat4& modelMatrix,
                               const Mat4& viewProjection) {
-    (void)mdl; (void)modelMatrix; (void)viewProjection;
-    // Model rendering: TODO in Phase 2
+    // Static pose render (no external bone setup) — used for w_ models
+    std::vector<Mat4> bones;
+    MDLAnimator::ComputeBones(mdl, -1, 0, bones);
+    // Without a texture cache we cannot upload textures here; callers should
+    // prefer RenderMDL. This path renders nothing if textures are absent.
+    (void)modelMatrix; (void)viewProjection;
+}
+
+void GLRenderer::ClearDepth() {
+    glClear(GL_DEPTH_BUFFER_BIT);
+}
+
+void GLRenderer::RenderMDL(const MDLFile& mdl,
+                            const std::vector<Mat4>& bones,
+                            const Mat4& modelMatrix,
+                            const Mat4& viewProjection,
+                            TextureCache& texCache) {
+    if (bones.empty() || mdl.bodyParts.empty()) return;
+
+    // Lazy-create dynamic buffers
+    if (m_mdlVAO == 0) {
+        glGenVertexArrays(1, &m_mdlVAO);
+        glGenBuffers(1, &m_mdlVBO);
+        glGenBuffers(1, &m_mdlEBO);
+
+        glBindVertexArray(m_mdlVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_mdlVBO);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_mdlEBO);
+        // pos(3) normal(3) uv(2)
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8*sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8*sizeof(float),
+                              (void*)(3*sizeof(float)));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8*sizeof(float),
+                              (void*)(6*sizeof(float)));
+        glBindVertexArray(0);
+    }
+
+    Mat4 mvp = viewProjection * modelMatrix;
+
+    glUseProgram(m_modelShader);
+    glUniformMatrix4fv(glGetUniformLocation(m_modelShader, "uMVP"),
+                       1, GL_FALSE, mvp.Data());
+    glUniformMatrix4fv(glGetUniformLocation(m_modelShader, "uModel"),
+                       1, GL_FALSE, modelMatrix.Data());
+    glUniform1i(glGetUniformLocation(m_modelShader, "uTexture"), 0);
+
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE); // MDL winding varies; render both sides
+
+    std::vector<float> skinned;
+
+    for (const MDLBodyPart& bp : mdl.bodyParts) {
+        for (const MDLMesh& mesh : bp.meshes) {
+            if (mesh.verts.empty() || mesh.indices.empty()) continue;
+
+            // Resolve texture
+            int texIdx = mdl.SkinTexture(mesh.skinRef);
+            TextureHandle tex = m_whiteTexture;
+            if (texIdx >= 0 && texIdx < (int)mdl.textures.size()) {
+                const MDLTexture& mt = mdl.textures[texIdx];
+                if (!mt.pixels.empty()) {
+                    std::string key = mdl.name + "#" + std::to_string(texIdx);
+                    tex = texCache.GetOrUpload(key, mt.pixels.data(),
+                                                mt.width, mt.height);
+                }
+            }
+
+            bool chrome = false;
+            if (texIdx >= 0 && texIdx < (int)mdl.textures.size())
+                chrome = (mdl.textures[texIdx].flags & MDL_TEX_CHROME) != 0;
+
+            // CPU skinning
+            skinned.clear();
+            skinned.reserve(mesh.verts.size() * 8);
+            for (const MDLVertex& v : mesh.verts) {
+                int b = (v.bone >= 0 && v.bone < (int)bones.size()) ? v.bone : 0;
+                Vec3 p = bones[b].TransformPoint(v.pos);
+                Vec3 n = bones[b].TransformDir(v.normal);
+
+                float u = v.uv.x, tv = v.uv.y;
+                if (chrome) {
+                    // Spherical environment approximation
+                    u  = n.x * 0.5f + 0.5f;
+                    tv = n.y * 0.5f + 0.5f;
+                }
+
+                skinned.insert(skinned.end(),
+                    { p.x, p.y, p.z, n.x, n.y, n.z, u, tv });
+            }
+
+            glBindVertexArray(m_mdlVAO);
+
+            glBindBuffer(GL_ARRAY_BUFFER, m_mdlVBO);
+            size_t vbytes = skinned.size() * sizeof(float);
+            if (vbytes > m_mdlVBOSize) {
+                glBufferData(GL_ARRAY_BUFFER, vbytes, skinned.data(), GL_DYNAMIC_DRAW);
+                m_mdlVBOSize = vbytes;
+            } else {
+                glBufferData(GL_ARRAY_BUFFER, m_mdlVBOSize, nullptr, GL_DYNAMIC_DRAW);
+                glBufferData(GL_ARRAY_BUFFER, vbytes, skinned.data(), GL_DYNAMIC_DRAW);
+            }
+
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_mdlEBO);
+            size_t ibytes = mesh.indices.size() * sizeof(uint32_t);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, ibytes, mesh.indices.data(),
+                         GL_DYNAMIC_DRAW);
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, tex);
+
+            glDrawElements(GL_TRIANGLES, (GLsizei)mesh.indices.size(),
+                           GL_UNSIGNED_INT, nullptr);
+
+            m_stats.drawCalls++;
+            m_stats.trisRendered += (int)mesh.indices.size() / 3;
+        }
+    }
+
+    glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
 }
 
 // ─── 2D ───────────────────────────────────────────────────────────────────────

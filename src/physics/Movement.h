@@ -51,8 +51,9 @@ struct MoveVars {
 struct PlayerInput {
     Vec3  wishDir = {};     // normalized movement direction (from keys)
     float wishSpeed = 0;    // desired speed (before clamping)
-    bool  jumpPressed  = false;
+    bool  jumpPressed  = false; // current jump key state (held)
     bool  duckPressed  = false;
+    bool  walkPressed  = false; // shift walk (CS 1.6: 0.52x speed)
     bool  onLadder     = false;
     float forwardMove  = 0; // -1..1
     float sideMove     = 0; // -1..1
@@ -77,9 +78,16 @@ struct PlayerState {
     Vec3  groundNormal = {0,0,1};
     int   groundContents = 0;
 
+    // Jump latch: GoldSrc requires releasing jump between hops
+    bool  jumpHeldLast = false;
+
     // GoldSrc-style stamina / speed modifiers
     float stamina = 0.0f;  // reduces max speed when running (0=no penalty)
 };
+
+// CS 1.6 movement speed factors
+static constexpr float DUCK_SPEED_FACTOR = 0.333f;
+static constexpr float WALK_SPEED_FACTOR = 0.52f;
 
 // Trace result for collision
 struct TraceResult {

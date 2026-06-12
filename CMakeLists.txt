@@ -66,6 +66,7 @@ add_library(ostrike_engine STATIC
   src/engine/Camera.cpp
   src/engine/Config.cpp
   src/engine/AssetManager.cpp
+  src/engine/HUD.cpp
   src/physics/Movement.cpp
   src/physics/Collision.cpp
   src/renderer/GLRenderer.cpp
@@ -74,6 +75,8 @@ add_library(ostrike_engine STATIC
   src/game/GameRules.cpp
   src/game/Player.cpp
   src/game/Weapon.cpp
+  src/game/WeaponSystem.cpp
+  src/game/Projectile.cpp
 )
 
 target_include_directories(ostrike_engine PUBLIC src)

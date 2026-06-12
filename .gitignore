@@ -10,3 +10,9 @@ build/
 .idea/
 cmake-build-*/
 compile_commands.json
+
+# Compiled test binaries
+tests/test_bsp
+tests/test_entity
+tests/test_movement
+tests/test_wad

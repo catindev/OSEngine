@@ -77,6 +77,8 @@ add_library(ostrike_engine STATIC
   src/game/Weapon.cpp
   src/game/WeaponSystem.cpp
   src/game/Projectile.cpp
+  src/game/Nav.cpp
+  src/game/Bot.cpp
 )
 
 target_include_directories(ostrike_engine PUBLIC src)

@@ -425,14 +425,14 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
     static bool s_diagDone = false;
     if (!s_diagDone) {
         s_diagDone = true;
-        int valid = 0, invalid = 0;
+        int drawable = 0, zeroVao = 0;
         for (const GLFace& gf : m_currentBSP->faces) {
             if (!gf.uploaded || gf.indexCount == 0) continue;
-            if (gf.vao != 0 && glIsVertexArray(gf.vao)) valid++; else invalid++;
+            if (gf.vao != 0) drawable++; else zeroVao++;
         }
         fprintf(stderr,
-            "[RenderWorld diag] worldShader=%u faces=%zu validVAO=%d invalidVAO=%d glErr=0x%x\n",
-            m_worldShader, m_currentBSP->faces.size(), valid, invalid, glGetError());
+            "[RenderWorld diag] worldShader=%u faces=%zu drawable=%d zeroVAO=%d glErr=0x%x\n",
+            m_worldShader, m_currentBSP->faces.size(), drawable, zeroVao, glGetError());
     }
 
     for (const GLFace& gf : m_currentBSP->faces) {

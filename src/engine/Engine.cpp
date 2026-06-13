@@ -192,16 +192,34 @@ bool Engine::LoadMap(const std::string& mapName) {
     m_playerMove = std::make_unique<PlayerMove>(mv, MakeTraceFn(*m_collision));
 
     auto entities = EntityParser::Parse(m_currentBSP->entities);
-    for (const auto& ent : entities) {
-        if (ent.ClassName() == "info_player_start" ||
-            ent.ClassName() == "info_player_counterterrorist") {
-            Vec3 origin = ent.GetVec3("origin");
-            m_localPlayer.physState.origin = origin;
-            m_camera.origin = origin + Vec3(0, 0, 28);
-            m_camera.angles = ent.GetAngles("angles");
-            break;
+    Vec3 spawnOrigin = {0, 0, 128}; // safe default above origin
+    Angles spawnAngles = {};
+    bool foundSpawn = false;
+    // Try CT spawn first, then any player start, then worldspawn origin
+    for (int pass = 0; pass < 2 && !foundSpawn; pass++) {
+        for (const auto& ent : entities) {
+            const std::string& cn = ent.ClassName();
+            bool isCT = (cn == "info_player_counterterrorist");
+            bool isStart = (cn == "info_player_start");
+            if ((pass == 0 && isCT) || (pass == 1 && (isCT || isStart))) {
+                Vec3 o = ent.GetVec3("origin");
+                // Only use spawn if it's not exactly at origin (likely unset)
+                if (o.x != 0 || o.y != 0 || o.z != 0) {
+                    spawnOrigin = o;
+                    spawnAngles = ent.GetAngles("angles");
+                    foundSpawn = true;
+                    fprintf(stderr, "[spawn] %s at (%.0f,%.0f,%.0f)\n",
+                            cn.c_str(), o.x, o.y, o.z);
+                    break;
+                }
+            }
         }
     }
+    // Raise spawn above floor so player doesn't start inside geometry
+    spawnOrigin.z += 36.0f;
+    m_localPlayer.physState.origin = spawnOrigin;
+    m_camera.origin = spawnOrigin + Vec3(0, 0, 28);
+    m_camera.angles = spawnAngles;
 
     printf("Map ready: %s\n", mapName.c_str());
     return true;

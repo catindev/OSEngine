@@ -284,12 +284,8 @@ TextureHandle GLRenderer::UploadTexture(const uint8_t* rgba, int w, int h, bool 
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    GLenum e = glGetError();
-    if (e) fprintf(stderr, "[UploadTexture] glTexImage2D(%dx%d) err=0x%x\n", w, h, e);
     if (genMips) {
         glGenerateMipmap(GL_TEXTURE_2D);
-        e = glGetError();
-        if (e) fprintf(stderr, "[UploadTexture] glGenerateMipmap(%dx%d) err=0x%x\n", w, h, e);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     } else {
@@ -417,10 +413,6 @@ void GLRenderer::UploadBSP(const BSPFile& bsp, GLBSPData& out,
 
     glBindVertexArray(0);
 
-    fprintf(stderr,
-        "[UploadBSP diag] worldVAO=%u worldVBO=%u floats=%zu glErr=0x%x\n",
-        out.worldVAO, out.worldVBO, worldVerts.size(), glGetError());
-
     out.ready = true;
 }
 
@@ -432,7 +424,7 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
     // Engine calls UploadBSP before calling RenderWorld.
     if (!m_currentBSP || !m_currentBSP->ready) return;
 
-    bool fullbright = true; // TEMP: lightmap attr disabled while debugging Apple GL
+    bool fullbright = false;
 
     glUseProgram(m_worldShader);
 
@@ -451,70 +443,32 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
     if (m_currentBSP->worldVAO == 0) return;
     glBindVertexArray(m_currentBSP->worldVAO);
 
-    // Apple GL workaround: the VAO does not reliably retain the VBO→attribute
-    // binding across frames, which makes glDrawArrays read attribute 0 from a
-    // client-side null pointer and crash inside gleRunVertexSubmitImmediate.
-    // Re-bind the VBO and re-specify the attribute pointers every frame.
+    // Re-bind the VBO and re-specify the attribute pointers each frame. This is
+    // belt-and-suspenders on Apple GL where VAO attribute state has historically
+    // been unreliable; it is cheap relative to the per-face draws.
     constexpr GLsizei kStride = (GLsizei)(7 * sizeof(float));
     glBindBuffer(GL_ARRAY_BUFFER, m_currentBSP->worldVBO);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, (void*)0);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(3*sizeof(float)));
-    // TEMP: attribute 2 (lightmap UV) is disabled — it was being read as a
-    // client-side array on Apple GL (crash at offset 0x14). With fullbright
-    // the shader never samples the lightmap, so location 2 is unused.
-    glDisableVertexAttribArray(2);
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(5*sizeof(float)));
 
-    static bool s_diagDone = false;
-    if (!s_diagDone) {
-        s_diagDone = true;
-        size_t totalVerts = 0;
-        for (const GLFace& gf : m_currentBSP->faces)
-            if (gf.uploaded) totalVerts += gf.vertexCount;
+    for (const GLFace& gf : m_currentBSP->faces) {
+        if (!gf.uploaded || gf.vertexCount == 0) continue;
 
-        GLint curVAO = -1, arrBuf = -1;
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &curVAO);
-        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrBuf);
-        fprintf(stderr,
-            "[RenderWorld diag] worldShader=%u VAO=%u(cur=%d) VBO=%u arrBuf=%d "
-            "faces=%zu verts=%zu glErr=0x%x\n",
-            m_worldShader, m_currentBSP->worldVAO, curVAO, m_currentBSP->worldVBO,
-            arrBuf, m_currentBSP->faces.size(), totalVerts, glGetError());
-        for (int a = 0; a < 3; a++) {
-            GLint en = -1, bb = -1, sz = -1, ty = -1;
-            glGetVertexAttribiv(a, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &en);
-            glGetVertexAttribiv(a, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &bb);
-            glGetVertexAttribiv(a, GL_VERTEX_ATTRIB_ARRAY_SIZE, &sz);
-            glGetVertexAttribiv(a, GL_VERTEX_ATTRIB_ARRAY_TYPE, &ty);
-            fprintf(stderr,
-                "  attr%d: enabled=%d bufferBinding=%d size=%d type=0x%x\n",
-                a, en, bb, sz, ty);
-        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)gf.texture);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)gf.lightmap);
+
+        glDrawArrays(GL_TRIANGLES, gf.firstVertex, gf.vertexCount);
+
+        m_stats.drawCalls++;
+        m_stats.trisRendered += gf.vertexCount / 3;
+        m_stats.facesRendered++;
     }
-
-    // Count total uploaded verts
-    GLsizei totalUploadedVerts = 0;
-    for (const GLFace& gf : m_currentBSP->faces)
-        if (gf.uploaded && gf.vertexCount > 0) totalUploadedVerts += (GLsizei)gf.vertexCount;
-
-    // DIAGNOSTIC: skip per-face texture binding, draw entire world in one call
-    // with white texture to test if glDrawArrays works at all on Apple GL.
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, (GLuint)m_whiteTexture);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, (GLuint)m_whiteTexture);
-
-    fprintf(stderr, "[RenderWorld] single draw: totalVerts=%d glErr=0x%x\n",
-            totalUploadedVerts, glGetError());
-
-    glDrawArrays(GL_TRIANGLES, 0, totalUploadedVerts);
-
-    fprintf(stderr, "[RenderWorld] after glDrawArrays glErr=0x%x\n", glGetError());
-
-    m_stats.drawCalls = 1;
-    m_stats.trisRendered = totalUploadedVerts / 3;
-    m_stats.facesRendered = (int)m_currentBSP->faces.size();
 
     glBindVertexArray(0);
 }

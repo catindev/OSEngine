@@ -262,13 +262,17 @@ TextureHandle GLRenderer::UploadTexture(const uint8_t* rgba, int w, int h, bool 
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    GLenum e = glGetError();
+    if (e) fprintf(stderr, "[UploadTexture] glTexImage2D(%dx%d) err=0x%x\n", w, h, e);
     if (genMips) {
         glGenerateMipmap(GL_TEXTURE_2D);
+        e = glGetError();
+        if (e) fprintf(stderr, "[UploadTexture] glGenerateMipmap(%dx%d) err=0x%x\n", w, h, e);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     } else {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
@@ -432,23 +436,10 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
         for (const GLFace& gf : m_currentBSP->faces)
             if (gf.uploaded) totalVerts += gf.vertexCount;
 
-        // Ask the driver what the bound VAO actually thinks attribute 0 is:
-        // if BUFFER_BINDING is 0 the attribute is client-side → glDrawArrays
-        // reads from address 0 and crashes.
-        GLint a0enabled = -1, a0buffer = -1, a0size = -1, a0type = -1, curVAO = -1, arrBuf = -1;
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &curVAO);
-        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrBuf);
-        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &a0enabled);
-        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &a0buffer);
-        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_SIZE, &a0size);
-        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_TYPE, &a0type);
-
         fprintf(stderr,
-            "[RenderWorld diag] worldShader=%u VAO=%u(cur=%d) VBO=%u faces=%zu verts=%zu\n"
-            "  attr0: enabled=%d bufferBinding=%d size=%d type=0x%x arrBufBind=%d glErr=0x%x\n",
-            m_worldShader, m_currentBSP->worldVAO, curVAO, m_currentBSP->worldVBO,
-            m_currentBSP->faces.size(), totalVerts,
-            a0enabled, a0buffer, a0size, a0type, arrBuf, glGetError());
+            "[RenderWorld diag] worldShader=%u VAO=%u VBO=%u faces=%zu verts=%zu glErr=0x%x\n",
+            m_worldShader, m_currentBSP->worldVAO, m_currentBSP->worldVBO,
+            m_currentBSP->faces.size(), totalVerts, glGetError());
     }
 
     for (const GLFace& gf : m_currentBSP->faces) {

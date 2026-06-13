@@ -422,8 +422,22 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
 
     glEnable(GL_DEPTH_TEST);
 
+    static bool s_diagDone = false;
+    if (!s_diagDone) {
+        s_diagDone = true;
+        int valid = 0, invalid = 0;
+        for (const GLFace& gf : m_currentBSP->faces) {
+            if (!gf.uploaded || gf.indexCount == 0) continue;
+            if (gf.vao != 0 && glIsVertexArray(gf.vao)) valid++; else invalid++;
+        }
+        fprintf(stderr,
+            "[RenderWorld diag] worldShader=%u faces=%zu validVAO=%d invalidVAO=%d glErr=0x%x\n",
+            m_worldShader, m_currentBSP->faces.size(), valid, invalid, glGetError());
+    }
+
     for (const GLFace& gf : m_currentBSP->faces) {
         if (!gf.uploaded || gf.indexCount == 0) continue;
+        if (gf.vao == 0) continue;
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, gf.texture);
@@ -431,6 +445,19 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
         glBindTexture(GL_TEXTURE_2D, gf.lightmap);
 
         glBindVertexArray(gf.vao);
+        // Belt-and-suspenders: some macOS GL drivers do not reliably retain the
+        // vertex/element buffer bindings inside the VAO across frames, which
+        // makes glDrawElements read from client address 0 (EXC_BAD_ACCESS).
+        // Re-bind buffers and re-specify the attribute layout each draw.
+        constexpr GLsizei kStride = 7 * sizeof(float); // pos(3) texUV(2) lmUV(2)
+        glBindBuffer(GL_ARRAY_BUFFER, gf.vbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(3*sizeof(float)));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(5*sizeof(float)));
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gf.ebo);
         glDrawElements(GL_TRIANGLES, gf.indexCount, GL_UNSIGNED_INT, nullptr);
 
         m_stats.drawCalls++;

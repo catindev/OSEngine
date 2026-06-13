@@ -215,11 +215,26 @@ bool Engine::LoadMap(const std::string& mapName) {
             }
         }
     }
-    // Raise spawn above floor so player doesn't start inside geometry
-    spawnOrigin.z += 36.0f;
+    // Raise spawn well above floor. GoldSrc clip hulls are pre-expanded by the
+    // player hull size, so the solid surface for hull1 is 36 units above the raw
+    // floor. Adding 128 ensures the player starts in clear air and falls to ground.
+    spawnOrigin.z += 128.0f;
     m_localPlayer.physState.origin = spawnOrigin;
     m_camera.origin = spawnOrigin + Vec3(0, 0, 28);
     m_camera.angles = spawnAngles;
+
+    // Diagnose spawn: trace down from spawn to check for solid
+    if (m_collision) {
+        Vec3 sp = spawnOrigin;
+        Vec3 dn = sp + Vec3(0, 0, -256);
+        auto tr = m_collision->Trace(sp, dn,
+            {-16,-16,-36}, {16,16,36}, 0 /*MASK_SOLID*/);
+        fprintf(stderr, "[spawn diag] origin=(%.0f,%.0f,%.0f) allSolid=%d startSolid=%d "
+                "hit=%d frac=%.3f endZ=%.0f\n",
+                sp.x, sp.y, sp.z,
+                (int)tr.allSolid, (int)tr.startSolid,
+                (int)tr.hit, tr.fraction, tr.endPos.z);
+    }
 
     printf("Map ready: %s\n", mapName.c_str());
     return true;
@@ -262,6 +277,10 @@ void Engine::ProcessEvents() {
                 break;
             case SDLK_F4:
                 m_running = false;
+                break;
+            case SDLK_n:
+                m_noclip = !m_noclip;
+                fprintf(stderr, "[noclip] %s\n", m_noclip ? "ON" : "OFF");
                 break;
             case SDLK_r:
                 if (m_weaponSys.StartReload(m_weapons[m_activeSlot], m_gameTime)) {
@@ -420,11 +439,26 @@ void Engine::Update(float dt) {
     m_gameTime += dt;
     const uint8_t* keys = SDL_GetKeyboardState(nullptr);
 
-    if (m_playerMove && m_currentBSP) {
+    if (m_currentBSP) {
         PlayerInput inp;
         BuildPlayerInput(keys, inp);
 
-        m_playerMove->Move(m_localPlayer.physState, inp, dt);
+        if (m_noclip) {
+            // Free-fly: move along camera forward/right/up at 320 u/s
+            constexpr float NC_SPEED = 400.0f;
+            Vec3 fwd   = m_camera.Forward();
+            Vec3 right = m_camera.Right();
+            Vec3 up    = {0, 0, 1};
+            Vec3 move  = fwd * inp.forwardMove + right * inp.sideMove;
+            if (keys[SDL_SCANCODE_SPACE]) move.z += 1.0f;
+            if (keys[SDL_SCANCODE_LCTRL]) move.z -= 1.0f;
+            float len = move.Length();
+            if (len > 0.01f) move = move / len;
+            m_localPlayer.physState.origin += move * NC_SPEED * dt;
+            m_localPlayer.physState.velocity = {};
+        } else if (m_playerMove) {
+            m_playerMove->Move(m_localPlayer.physState, inp, dt);
+        }
 
         m_camera.origin = m_localPlayer.eyePosition();
         m_localPlayer.physState.angles = m_camera.angles;

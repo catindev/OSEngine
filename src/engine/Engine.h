@@ -99,6 +99,7 @@ private:
 
     bool          m_running     = false;
     bool          m_mouseLocked = false;
+    bool          m_noclip     = false;
 
     // Input edge detection
     bool          m_firePressedEdge = false;

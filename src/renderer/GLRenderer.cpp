@@ -391,6 +391,10 @@ void GLRenderer::UploadBSP(const BSPFile& bsp, GLBSPData& out,
 
     glBindVertexArray(0);
 
+    fprintf(stderr,
+        "[UploadBSP diag] worldVAO=%u worldVBO=%u floats=%zu glErr=0x%x\n",
+        out.worldVAO, out.worldVBO, worldVerts.size(), glGetError());
+
     out.ready = true;
 }
 
@@ -427,10 +431,24 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
         size_t totalVerts = 0;
         for (const GLFace& gf : m_currentBSP->faces)
             if (gf.uploaded) totalVerts += gf.vertexCount;
+
+        // Ask the driver what the bound VAO actually thinks attribute 0 is:
+        // if BUFFER_BINDING is 0 the attribute is client-side → glDrawArrays
+        // reads from address 0 and crashes.
+        GLint a0enabled = -1, a0buffer = -1, a0size = -1, a0type = -1, curVAO = -1, arrBuf = -1;
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &curVAO);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrBuf);
+        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &a0enabled);
+        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &a0buffer);
+        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_SIZE, &a0size);
+        glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_TYPE, &a0type);
+
         fprintf(stderr,
-            "[RenderWorld diag] worldShader=%u VAO=%u faces=%zu verts=%zu glErr=0x%x\n",
-            m_worldShader, m_currentBSP->worldVAO,
-            m_currentBSP->faces.size(), totalVerts, glGetError());
+            "[RenderWorld diag] worldShader=%u VAO=%u(cur=%d) VBO=%u faces=%zu verts=%zu\n"
+            "  attr0: enabled=%d bufferBinding=%d size=%d type=0x%x arrBufBind=%d glErr=0x%x\n",
+            m_worldShader, m_currentBSP->worldVAO, curVAO, m_currentBSP->worldVBO,
+            m_currentBSP->faces.size(), totalVerts,
+            a0enabled, a0buffer, a0size, a0type, arrBuf, glGetError());
     }
 
     for (const GLFace& gf : m_currentBSP->faces) {

@@ -37,6 +37,8 @@ void   (APIENTRYP glDeleteVertexArrays)(GLsizei n, const GLuint* arrays);
 void   (APIENTRYP glBindVertexArray)(GLuint array);
 void   (APIENTRYP glVertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void*);
 void   (APIENTRYP glEnableVertexAttribArray)(GLuint index);
+void   (APIENTRYP glDisableVertexAttribArray)(GLuint index);
+void   (APIENTRYP glGetVertexAttribiv)(GLuint index, GLenum pname, GLint* params);
 void   (APIENTRYP glDrawArrays)(GLenum mode, GLint first, GLsizei count);
 void   (APIENTRYP glDrawElements)(GLenum mode, GLsizei count, GLenum type, const void* indices);
 
@@ -103,6 +105,8 @@ int gladLoadGLLoader(GLADloadproc loader) {
     LOAD(glBindVertexArray);
     LOAD(glVertexAttribPointer);
     LOAD(glEnableVertexAttribArray);
+    LOAD(glDisableVertexAttribArray);
+    LOAD(glGetVertexAttribiv);
     LOAD(glDrawArrays);
     LOAD(glDrawElements);
 

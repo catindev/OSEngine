@@ -5,6 +5,28 @@
 #include <cstdio>
 #include <string>
 
+// Standard GL enum values missing from this bundled glad header.
+// The query functions (glGetVertexAttribiv / glGetIntegerv) are core and
+// present; only these constants are absent, so we define them locally.
+#ifndef GL_VERTEX_ARRAY_BINDING
+#define GL_VERTEX_ARRAY_BINDING               0x85B5
+#endif
+#ifndef GL_ARRAY_BUFFER_BINDING
+#define GL_ARRAY_BUFFER_BINDING               0x8894
+#endif
+#ifndef GL_VERTEX_ATTRIB_ARRAY_ENABLED
+#define GL_VERTEX_ATTRIB_ARRAY_ENABLED        0x8622
+#endif
+#ifndef GL_VERTEX_ATTRIB_ARRAY_SIZE
+#define GL_VERTEX_ATTRIB_ARRAY_SIZE           0x8623
+#endif
+#ifndef GL_VERTEX_ATTRIB_ARRAY_TYPE
+#define GL_VERTEX_ATTRIB_ARRAY_TYPE           0x8625
+#endif
+#ifndef GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING
+#define GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING 0x889F
+#endif
+
 namespace OS {
 
 // ─── Shaders ──────────────────────────────────────────────────────────────────
@@ -410,7 +432,7 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
     // Engine calls UploadBSP before calling RenderWorld.
     if (!m_currentBSP || !m_currentBSP->ready) return;
 
-    bool fullbright = false; // set by cvar in engine
+    bool fullbright = true; // TEMP: lightmap attr disabled while debugging Apple GL
 
     glUseProgram(m_worldShader);
 
@@ -439,8 +461,10 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, (void*)0);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(3*sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(5*sizeof(float)));
+    // TEMP: attribute 2 (lightmap UV) is disabled — it was being read as a
+    // client-side array on Apple GL (crash at offset 0x14). With fullbright
+    // the shader never samples the lightmap, so location 2 is unused.
+    glDisableVertexAttribArray(2);
 
     static bool s_diagDone = false;
     if (!s_diagDone) {
@@ -449,10 +473,24 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
         for (const GLFace& gf : m_currentBSP->faces)
             if (gf.uploaded) totalVerts += gf.vertexCount;
 
+        GLint curVAO = -1, arrBuf = -1;
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &curVAO);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrBuf);
         fprintf(stderr,
-            "[RenderWorld diag] worldShader=%u VAO=%u VBO=%u faces=%zu verts=%zu glErr=0x%x\n",
-            m_worldShader, m_currentBSP->worldVAO, m_currentBSP->worldVBO,
-            m_currentBSP->faces.size(), totalVerts, glGetError());
+            "[RenderWorld diag] worldShader=%u VAO=%u(cur=%d) VBO=%u arrBuf=%d "
+            "faces=%zu verts=%zu glErr=0x%x\n",
+            m_worldShader, m_currentBSP->worldVAO, curVAO, m_currentBSP->worldVBO,
+            arrBuf, m_currentBSP->faces.size(), totalVerts, glGetError());
+        for (int a = 0; a < 3; a++) {
+            GLint en = -1, bb = -1, sz = -1, ty = -1;
+            glGetVertexAttribiv(a, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &en);
+            glGetVertexAttribiv(a, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &bb);
+            glGetVertexAttribiv(a, GL_VERTEX_ATTRIB_ARRAY_SIZE, &sz);
+            glGetVertexAttribiv(a, GL_VERTEX_ATTRIB_ARRAY_TYPE, &ty);
+            fprintf(stderr,
+                "  attr%d: enabled=%d bufferBinding=%d size=%d type=0x%x\n",
+                a, en, bb, sz, ty);
+        }
     }
 
     for (const GLFace& gf : m_currentBSP->faces) {

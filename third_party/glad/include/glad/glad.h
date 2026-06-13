@@ -201,6 +201,8 @@ GLAPI void   (APIENTRYP glDeleteVertexArrays)(GLsizei n, const GLuint* arrays);
 GLAPI void   (APIENTRYP glBindVertexArray)(GLuint array);
 GLAPI void   (APIENTRYP glVertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void*);
 GLAPI void   (APIENTRYP glEnableVertexAttribArray)(GLuint index);
+GLAPI void   (APIENTRYP glDisableVertexAttribArray)(GLuint index);
+GLAPI void   (APIENTRYP glGetVertexAttribiv)(GLuint index, GLenum pname, GLint* params);
 GLAPI void   (APIENTRYP glDrawArrays)(GLenum mode, GLint first, GLsizei count);
 GLAPI void   (APIENTRYP glDrawElements)(GLenum mode, GLsizei count, GLenum type, const void* indices);
 

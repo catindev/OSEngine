@@ -429,6 +429,19 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
     if (m_currentBSP->worldVAO == 0) return;
     glBindVertexArray(m_currentBSP->worldVAO);
 
+    // Apple GL workaround: the VAO does not reliably retain the VBO→attribute
+    // binding across frames, which makes glDrawArrays read attribute 0 from a
+    // client-side null pointer and crash inside gleRunVertexSubmitImmediate.
+    // Re-bind the VBO and re-specify the attribute pointers every frame.
+    constexpr GLsizei kStride = (GLsizei)(7 * sizeof(float));
+    glBindBuffer(GL_ARRAY_BUFFER, m_currentBSP->worldVBO);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(3*sizeof(float)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(5*sizeof(float)));
+
     static bool s_diagDone = false;
     if (!s_diagDone) {
         s_diagDone = true;

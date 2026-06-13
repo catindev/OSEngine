@@ -6,12 +6,13 @@
 
 namespace OS {
 
-// Per-face GPU data
+// Per-face draw range into the shared world vertex buffer.
+// The whole BSP lives in one VAO + one VBO of expanded triangle vertices
+// (no index buffer) — this is the most driver-robust layout, notably on
+// Apple's OpenGL where per-face VAO/EBO state was unreliable.
 struct GLFace {
-    uint32_t vao     = 0;
-    uint32_t vbo     = 0;
-    uint32_t ebo     = 0;
-    uint32_t indexCount = 0;
+    uint32_t firstVertex = 0;   // offset into the shared VBO (in vertices)
+    uint32_t vertexCount = 0;   // number of triangle vertices to draw
     TextureHandle texture   = INVALID_TEXTURE;
     TextureHandle lightmap  = INVALID_TEXTURE;
     bool uploaded = false;
@@ -19,6 +20,8 @@ struct GLFace {
 
 // Compiled BSP ready for rendering
 struct GLBSPData {
+    uint32_t worldVAO = 0;
+    uint32_t worldVBO = 0;
     std::vector<GLFace> faces;
     std::vector<TextureHandle> lightmapTextures; // one per face (or atlas later)
     bool ready = false;

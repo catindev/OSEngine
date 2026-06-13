@@ -288,6 +288,10 @@ void GLRenderer::UploadBSP(const BSPFile& bsp, GLBSPData& out,
                              TextureCache& texCache) {
     out.faces.resize(bsp.meshes.size());
 
+    // Combined world vertex array: pos(3) texUV(2) lmUV(2) per vertex.
+    constexpr size_t kFloatsPerVert = 7;
+    std::vector<float> worldVerts;
+
     for (size_t fi = 0; fi < bsp.meshes.size(); fi++) {
         const BSPMesh& mesh = bsp.meshes[fi];
         GLFace& gf = out.faces[fi];
@@ -351,49 +355,41 @@ void GLRenderer::UploadBSP(const BSPFile& bsp, GLBSPData& out,
         }
         if (gf.lightmap == INVALID_TEXTURE) gf.lightmap = m_whiteTexture;
 
-        // Build vertex buffer
-        struct GLVert { float x,y,z, s,t, ls,lt; };
-        std::vector<GLVert> verts(mesh.verts.size());
-        for (size_t v = 0; v < mesh.verts.size(); v++) {
-            verts[v] = {
-                mesh.verts[v].pos.x, mesh.verts[v].pos.y, mesh.verts[v].pos.z,
-                mesh.verts[v].texUV.x, mesh.verts[v].texUV.y,
-                mesh.verts[v].uv.x, mesh.verts[v].uv.y
-            };
+        // Expand this face's indexed triangles into a flat vertex run and
+        // append it to the shared world vertex array. Drawing with
+        // glDrawArrays (no index buffer) avoids the Apple GL null-index crash.
+        gf.firstVertex = (uint32_t)(worldVerts.size() / kFloatsPerVert);
+        for (uint32_t idx : mesh.indices) {
+            if (idx >= mesh.verts.size()) continue; // guard malformed data
+            const BSPFaceVertex& mv = mesh.verts[idx];
+            worldVerts.insert(worldVerts.end(), {
+                mv.pos.x, mv.pos.y, mv.pos.z,
+                mv.texUV.x, mv.texUV.y,
+                mv.uv.x, mv.uv.y
+            });
         }
-
-        glGenVertexArrays(1, &gf.vao);
-        glGenBuffers(1, &gf.vbo);
-        glGenBuffers(1, &gf.ebo);
-
-        glBindVertexArray(gf.vao);
-
-        glBindBuffer(GL_ARRAY_BUFFER, gf.vbo);
-        glBufferData(GL_ARRAY_BUFFER, verts.size()*sizeof(GLVert),
-                     verts.data(), GL_STATIC_DRAW);
-
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gf.ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                     mesh.indices.size()*sizeof(uint32_t),
-                     mesh.indices.data(), GL_STATIC_DRAW);
-
-        // pos
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(GLVert), (void*)0);
-        // texUV
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(GLVert),
-                              (void*)(3*sizeof(float)));
-        // lmUV
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(GLVert),
-                              (void*)(5*sizeof(float)));
-
-        glBindVertexArray(0);
-
-        gf.indexCount = (uint32_t)mesh.indices.size();
-        gf.uploaded   = true;
+        gf.vertexCount = (uint32_t)(worldVerts.size() / kFloatsPerVert) - gf.firstVertex;
+        gf.uploaded    = (gf.vertexCount > 0);
     }
+
+    // Upload the combined vertex array into one VBO bound to one VAO.
+    glGenVertexArrays(1, &out.worldVAO);
+    glGenBuffers(1, &out.worldVBO);
+
+    glBindVertexArray(out.worldVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, out.worldVBO);
+    glBufferData(GL_ARRAY_BUFFER, worldVerts.size() * sizeof(float),
+                 worldVerts.data(), GL_STATIC_DRAW);
+
+    constexpr GLsizei kStride = (GLsizei)(kFloatsPerVert * sizeof(float));
+    glEnableVertexAttribArray(0); // pos
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, (void*)0);
+    glEnableVertexAttribArray(1); // texUV
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(3*sizeof(float)));
+    glEnableVertexAttribArray(2); // lmUV
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(5*sizeof(float)));
+
+    glBindVertexArray(0);
 
     out.ready = true;
 }
@@ -422,46 +418,33 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
 
     glEnable(GL_DEPTH_TEST);
 
+    if (m_currentBSP->worldVAO == 0) return;
+    glBindVertexArray(m_currentBSP->worldVAO);
+
     static bool s_diagDone = false;
     if (!s_diagDone) {
         s_diagDone = true;
-        int drawable = 0, zeroVao = 0;
-        for (const GLFace& gf : m_currentBSP->faces) {
-            if (!gf.uploaded || gf.indexCount == 0) continue;
-            if (gf.vao != 0) drawable++; else zeroVao++;
-        }
+        size_t totalVerts = 0;
+        for (const GLFace& gf : m_currentBSP->faces)
+            if (gf.uploaded) totalVerts += gf.vertexCount;
         fprintf(stderr,
-            "[RenderWorld diag] worldShader=%u faces=%zu drawable=%d zeroVAO=%d glErr=0x%x\n",
-            m_worldShader, m_currentBSP->faces.size(), drawable, zeroVao, glGetError());
+            "[RenderWorld diag] worldShader=%u VAO=%u faces=%zu verts=%zu glErr=0x%x\n",
+            m_worldShader, m_currentBSP->worldVAO,
+            m_currentBSP->faces.size(), totalVerts, glGetError());
     }
 
     for (const GLFace& gf : m_currentBSP->faces) {
-        if (!gf.uploaded || gf.indexCount == 0) continue;
-        if (gf.vao == 0) continue;
+        if (!gf.uploaded || gf.vertexCount == 0) continue;
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, gf.texture);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, gf.lightmap);
 
-        glBindVertexArray(gf.vao);
-        // Belt-and-suspenders: some macOS GL drivers do not reliably retain the
-        // vertex/element buffer bindings inside the VAO across frames, which
-        // makes glDrawElements read from client address 0 (EXC_BAD_ACCESS).
-        // Re-bind buffers and re-specify the attribute layout each draw.
-        constexpr GLsizei kStride = 7 * sizeof(float); // pos(3) texUV(2) lmUV(2)
-        glBindBuffer(GL_ARRAY_BUFFER, gf.vbo);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, (void*)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(3*sizeof(float)));
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, kStride, (void*)(5*sizeof(float)));
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gf.ebo);
-        glDrawElements(GL_TRIANGLES, gf.indexCount, GL_UNSIGNED_INT, nullptr);
+        glDrawArrays(GL_TRIANGLES, gf.firstVertex, gf.vertexCount);
 
         m_stats.drawCalls++;
-        m_stats.trisRendered += gf.indexCount / 3;
+        m_stats.trisRendered += gf.vertexCount / 3;
         m_stats.facesRendered++;
     }
 

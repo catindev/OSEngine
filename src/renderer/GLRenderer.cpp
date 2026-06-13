@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
+#include <unordered_set>
 
 // Standard GL enum values missing from this bundled glad header.
 // The query functions (glGetVertexAttribiv / glGetIntegerv) are core and
@@ -329,9 +330,35 @@ void GLRenderer::UploadBSP(const BSPFile& bsp, GLBSPData& out,
                     gf.texture = texCache.Upload(tex.name, tex.pixels.data(),
                                                   tex.width, tex.height, true);
                 }
+                // First 5 unique textures: log what happened
+                static int s_logCount = 0;
+                if (s_logCount < 5 && gf.texture != INVALID_TEXTURE &&
+                    texCache.Get(tex.name) == gf.texture) {
+                    static std::unordered_set<std::string> s_logged;
+                    if (s_logged.insert(tex.name).second) {
+                        s_logCount++;
+                        fprintf(stderr, "[tex] '%s' emb=%d px=%zu id=%u\n",
+                                tex.name.c_str(), tex.embedded, tex.pixels.size(), gf.texture);
+                    }
+                }
             }
         }
-        if (gf.texture == INVALID_TEXTURE) gf.texture = m_whiteTexture;
+        if (gf.texture == INVALID_TEXTURE) {
+            // Log first few misses
+            static int s_missCount = 0;
+            if (s_missCount < 3 && mesh.textureName >= 0 &&
+                mesh.textureName < (int)bsp.textures.size()) {
+                const BSPTexture& tex = bsp.textures[mesh.textureName];
+                static std::unordered_set<std::string> s_missLogged;
+                if (s_missLogged.insert(tex.name).second) {
+                    s_missCount++;
+                    fprintf(stderr, "[tex MISS] '%s' emb=%d px=%zu wadName='%s'\n",
+                            tex.name.c_str(), tex.embedded, tex.pixels.size(),
+                            tex.wadName.c_str());
+                }
+            }
+            gf.texture = m_whiteTexture;
+        }
 
         // Upload lightmap (simple: one 1x1 white if no lightmap)
         const BSPRawFace& rf = bsp.rawFaces[fi];

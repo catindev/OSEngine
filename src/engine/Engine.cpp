@@ -93,6 +93,11 @@ bool Engine::Init(const EngineConfig& cfg) {
 
     m_running = true;
 
+    // Capture the mouse immediately so look + movement work on launch.
+    // ESC toggles it back off.
+    m_mouseLocked = true;
+    SDL_SetRelativeMouseMode(SDL_TRUE);
+
     if (!cfg.startMap.empty()) {
         if (!LoadMap(cfg.startMap)) {
             fprintf(stderr, "Failed to load start map: %s\n", cfg.startMap.c_str());

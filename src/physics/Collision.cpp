@@ -34,103 +34,99 @@ int CollisionSystem::PointContents(Vec3 point) const {
 
 // ─── Hull trace ───────────────────────────────────────────────────────────────
 
-void CollisionSystem::RecursiveHullCheck(ClipContext& ctx,
-                                          int nodeIndex,
-                                          float p1f, float p2f,
-                                          Vec3 p1, Vec3 p2,
-                                          int hull) const {
-    if (ctx.result.fraction <= p1f) return; // already hit something closer
+// Distance offset to keep the trace endpoint a hair off the surface.
+static constexpr float DIST_EPSILON = 0.03125f; // 1/32 unit, as in Quake/GoldSrc
 
-    // Leaf node
-    if (nodeIndex < 0) {
-        if (!ctx.result.startSolid) {
-            if (nodeIndex == CONTENTS_SOLID) {
-                ctx.result.startSolid = true;
-                ctx.result.allSolid   = true;
-            } else {
-                if (nodeIndex == CONTENTS_EMPTY || nodeIndex == CONTENTS_CURRENT_0 ||
-                    nodeIndex == CONTENTS_CURRENT_90 || nodeIndex == CONTENTS_CURRENT_180 ||
-                    nodeIndex == CONTENTS_CURRENT_270) {
-                    ctx.result.hit = false;
-                }
-            }
+// Walk a clipnode hull to find the contents (a negative CONTENTS_* value) at a
+// point. GoldSrc clip hulls are pre-expanded at compile time, so this is a pure
+// point query — the box size is already baked into the hull planes.
+int CollisionSystem::HullPointContents(int headNode, Vec3 point) const {
+    const std::vector<BSPClipNode>& clipNodes = m_bsp.clipNodes;
+    int num = headNode;
+    while (num >= 0) {
+        if (num >= (int)clipNodes.size()) return CONTENTS_SOLID;
+        const BSPClipNode& node = clipNodes[num];
+        float d = node.plane.normal.Dot(point) - node.plane.dist;
+        num = node.children[d < 0 ? 1 : 0];
+    }
+    return num; // negative contents value
+}
+
+bool CollisionSystem::RecursiveHullCheck(ClipContext& ctx,
+                                          int num,
+                                          float p1f, float p2f,
+                                          Vec3 p1, Vec3 p2) const {
+    const std::vector<BSPClipNode>& clipNodes = m_bsp.clipNodes;
+
+    // Reached a leaf (contents value).
+    if (num < 0) {
+        if (num != CONTENTS_SOLID) {
+            ctx.result.allSolid = false;   // got at least partway through open space
+        } else {
+            ctx.result.startSolid = true;  // a portion of the move began in solid
         }
-        ctx.result.contents = nodeIndex;
-        return;
+        return true; // not blocked here — keep going
     }
 
-    // Select the appropriate clipnode tree
-    const std::vector<BSPClipNode>& clipNodes = m_bsp.clipNodes;
-    if (nodeIndex >= (int)clipNodes.size()) return;
+    if (num >= (int)clipNodes.size()) return true;
 
-    const BSPClipNode& node = clipNodes[nodeIndex];
+    const BSPClipNode& node = clipNodes[num];
     const Plane& plane = node.plane;
 
-    float t1, t2, offset;
+    float t1 = plane.normal.Dot(p1) - plane.dist;
+    float t2 = plane.normal.Dot(p2) - plane.dist;
 
-    // Separating distance for AABB vs plane
-    // Expand trace box to world box for clip
-    if (plane.normal.x == 1.0f) {
-        t1 = p1.x - plane.dist;
-        t2 = p2.x - plane.dist;
-        offset = ctx.hullMaxs.x - ctx.hullMins.x;
-    } else if (plane.normal.y == 1.0f) {
-        t1 = p1.y - plane.dist;
-        t2 = p2.y - plane.dist;
-        offset = ctx.hullMaxs.y - ctx.hullMins.y;
-    } else if (plane.normal.z == 1.0f) {
-        t1 = p1.z - plane.dist;
-        t2 = p2.z - plane.dist;
-        offset = ctx.hullMaxs.z - ctx.hullMins.z;
-    } else {
-        t1 = plane.normal.Dot(p1) - plane.dist;
-        t2 = plane.normal.Dot(p2) - plane.dist;
-        offset = std::abs(ctx.hullMaxs.x * plane.normal.x)
-               + std::abs(ctx.hullMaxs.y * plane.normal.y)
-               + std::abs(ctx.hullMaxs.z * plane.normal.z);
-    }
+    // Both points on the same side: descend that child only.
+    if (t1 >= 0 && t2 >= 0)
+        return RecursiveHullCheck(ctx, node.children[0], p1f, p2f, p1, p2);
+    if (t1 < 0 && t2 < 0)
+        return RecursiveHullCheck(ctx, node.children[1], p1f, p2f, p1, p2);
 
-    // Completely on one side?
-    if (t1 >= offset && t2 >= offset) {
-        RecursiveHullCheck(ctx, node.children[0], p1f, p2f, p1, p2, hull);
-        return;
-    }
-    if (t1 < -offset && t2 < -offset) {
-        RecursiveHullCheck(ctx, node.children[1], p1f, p2f, p1, p2, hull);
-        return;
-    }
-
-    // Crosses the plane
-    if (std::abs(t1 - t2) < kEpsilon) {
-        RecursiveHullCheck(ctx, node.children[0], p1f, p2f, p1, p2, hull);
-        RecursiveHullCheck(ctx, node.children[1], p1f, p2f, p1, p2, hull);
-        return;
-    }
-
-    int side  = (t1 < t2) ? 1 : 0;
-    float frac = (t1 + (side == 0 ? offset : -offset) + kEpsilon) / (t1 - t2);
-    float frac2 = (t1 + (side == 0 ? -offset : offset) - kEpsilon) / (t1 - t2);
-
-    frac  = Clamp(frac,  0.0f, 1.0f);
-    frac2 = Clamp(frac2, 0.0f, 1.0f);
+    // The segment crosses the plane — split it, biasing the crosspoint a hair
+    // onto the near side.
+    float frac;
+    if (t1 < 0) frac = (t1 + DIST_EPSILON) / (t1 - t2);
+    else        frac = (t1 - DIST_EPSILON) / (t1 - t2);
+    frac = Clamp(frac, 0.0f, 1.0f);
 
     float midf = p1f + (p2f - p1f) * frac;
-    Vec3 mid = p1 + (p2 - p1) * frac;
+    Vec3  mid  = p1 + (p2 - p1) * frac;
 
-    RecursiveHullCheck(ctx, node.children[side], p1f, midf, p1, mid, hull);
+    int side = (t1 < 0) ? 1 : 0;
 
-    float midf2 = p1f + (p2f - p1f) * frac2;
-    Vec3 mid2 = p1 + (p2 - p1) * frac2;
+    // Move up to the node on the near side.
+    if (!RecursiveHullCheck(ctx, node.children[side], p1f, midf, p1, mid))
+        return false;
 
-    RecursiveHullCheck(ctx, node.children[1-side], midf2, p2f, mid2, p2, hull);
+    // If the far side isn't solid, continue the trace past the plane.
+    if (HullPointContents(ctx.headNode, mid) != CONTENTS_SOLID)
+        if (HullPointContents(node.children[side ^ 1], mid) != CONTENTS_SOLID)
+            return RecursiveHullCheck(ctx, node.children[side ^ 1], midf, p2f, mid, p2);
 
-    // If hit on near side, record the collision
-    if (ctx.result.fraction > midf && node.children[side] == CONTENTS_SOLID) {
-        ctx.result.fraction = midf;
-        ctx.result.normal   = (side == 0) ? plane.normal : -plane.normal;
-        ctx.result.hit      = true;
-        ctx.result.endPos   = p1 + (p2 - p1) * midf;
+    // The other side is solid: this is the impact point.
+    if (ctx.result.allSolid)
+        return false; // never got out of solid
+
+    // Record the impact plane (flip when the near side was the back side).
+    ctx.result.normal = (side == 0) ? plane.normal : -plane.normal;
+
+    // Back the crosspoint out of any residual solid (rarely needed).
+    while (HullPointContents(ctx.headNode, mid) == CONTENTS_SOLID) {
+        frac -= 0.1f;
+        if (frac < 0) {
+            ctx.result.fraction = midf;
+            ctx.result.endPos   = mid;
+            ctx.result.hit      = true;
+            return false;
+        }
+        midf = p1f + (p2f - p1f) * frac;
+        mid  = p1 + (p2 - p1) * frac;
     }
+
+    ctx.result.fraction = midf;
+    ctx.result.endPos   = mid;
+    ctx.result.hit      = true;
+    return false;
 }
 
 TraceResult CollisionSystem::Trace(Vec3 start, Vec3 end,
@@ -143,23 +139,28 @@ TraceResult CollisionSystem::Trace(Vec3 start, Vec3 end,
     ctx.hullMaxs = hullMaxs;
     ctx.result.endPos   = end;
     ctx.result.fraction = 1.0f;
+    ctx.result.allSolid = true;  // cleared as soon as we pass through open space
     ctx.result.hit      = false;
 
-    if (m_bsp.models.empty()) return ctx.result;
+    if (m_bsp.models.empty() || m_bsp.clipNodes.empty()) {
+        ctx.result.allSolid = false;
+        return ctx.result;
+    }
 
     int hull = SelectHull(hullMins, hullMaxs);
-    int headNode = m_bsp.models[0].headnode[std::min(hull, BSP_MAX_HULLS-1)];
+    ctx.headNode = m_bsp.models[0].headnode[std::min(hull, BSP_MAX_HULLS-1)];
 
-    RecursiveHullCheck(ctx, headNode, 0.0f, 1.0f, start, end, hull);
+    RecursiveHullCheck(ctx, ctx.headNode, 0.0f, 1.0f, start, end);
 
     if (ctx.result.startSolid) {
-        ctx.result.allSolid = true;
         ctx.result.fraction = 0.0f;
         ctx.result.endPos   = start;
         ctx.result.hit      = true;
     } else if (ctx.result.fraction < 1.0f) {
         ctx.result.endPos = start + (end - start) * ctx.result.fraction;
         ctx.result.hit    = true;
+    } else {
+        ctx.result.endPos = end;
     }
 
     return ctx.result;

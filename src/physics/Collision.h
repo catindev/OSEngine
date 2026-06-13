@@ -15,6 +15,7 @@ struct ClipContext {
     Vec3        end;
     Vec3        hullMins;
     Vec3        hullMaxs;
+    int         headNode = 0; // firstclipnode of the active hull
     TraceResult result;
 };
 
@@ -41,13 +42,15 @@ public:
 private:
     const BSPFile& m_bsp;
 
-    void RecursiveHullCheck(ClipContext& ctx,
+    // Faithful Quake/GoldSrc point-trace against the (pre-expanded) clip hull.
+    // Returns true if the segment is entirely in non-solid space.
+    bool RecursiveHullCheck(ClipContext& ctx,
                             int nodeIndex,
                             float p1f, float p2f,
-                            Vec3 p1, Vec3 p2,
-                            int hull) const;
+                            Vec3 p1, Vec3 p2) const;
 
-    bool HullPointContents(int headNode, Vec3 point, int hull) const;
+    // Contents (CONTENTS_*) at a point within a clipnode hull.
+    int HullPointContents(int headNode, Vec3 point) const;
 };
 
 // Build a TraceFn from a CollisionSystem (for use with PlayerMove)

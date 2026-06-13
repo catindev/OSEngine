@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 
 namespace fs = std::filesystem;
 
@@ -54,28 +55,38 @@ const BSPFile* AssetManager::LoadBSP(const std::string& mapName) {
 }
 
 void AssetManager::LoadWADsForMap(const BSPFile& bsp) {
+    int loaded = 0;
     for (const std::string& wadPath : bsp.wadFiles) {
-        // Normalize path: take just the filename for search
-        fs::path p(wadPath);
-        std::string wadName = p.filename().string();
+        // BSP "wad" keys store Windows-style paths (e.g. "\cstrike\cstrike.wad"
+        // or "C:\sierra\half-life\valve\halflife.wad"). On POSIX, backslashes
+        // are NOT path separators, so std::filesystem won't split them — pull
+        // out the basename manually after the last slash of either flavour.
+        std::string norm = wadPath;
+        for (char& c : norm) if (c == '\\') c = '/';
+        size_t slash = norm.find_last_of('/');
+        std::string wadName = (slash == std::string::npos) ? norm
+                                                           : norm.substr(slash + 1);
 
-        // Try resolving full WAD path first, then just filename
-        std::string resolved = Resolve(wadPath);
+        std::string resolved = Resolve(norm);
         if (resolved.empty()) resolved = Resolve("cstrike/" + wadName);
         if (resolved.empty()) resolved = Resolve(wadName);
         if (resolved.empty()) {
-            // Try common WAD locations
-            for (const char* dir : {"", "valve/", "cstrike/"}) {
+            for (const char* dir : {"", "valve/", "cstrike/", "cstrike_downloads/"}) {
                 resolved = JoinPath(m_csDir, std::string(dir) + wadName);
                 if (fs::exists(resolved)) break;
                 resolved = "";
             }
         }
 
-        if (!resolved.empty()) {
-            m_wadManager.AddWAD(resolved);
+        if (!resolved.empty() && m_wadManager.AddWAD(resolved)) {
+            loaded++;
+        } else {
+            fprintf(stderr, "[WAD] not found: %s (basename '%s')\n",
+                    wadPath.c_str(), wadName.c_str());
         }
     }
+    fprintf(stderr, "[WAD] loaded %d/%zu wads across %d files\n",
+            loaded, bsp.wadFiles.size(), m_wadManager.WADCount());
 }
 
 const WADTexture* AssetManager::FindTexture(const std::string& name) const {

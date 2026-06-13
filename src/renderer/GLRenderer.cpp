@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <string>
 #include <unordered_set>
+#include <unordered_map>
 
 // Standard GL enum values missing from this bundled glad header.
 // The query functions (glGetVertexAttribiv / glGetIntegerv) are core and
@@ -62,12 +63,17 @@ uniform int  uFullbright;
 out vec4 FragColor;
 
 void main() {
+    // uFullbright==2: show UV coords as color (debug UV layout)
+    if (uFullbright == 2) {
+        FragColor = vec4(fract(vTexUV.x), fract(vTexUV.y), 0.5, 1.0);
+        return;
+    }
+
     vec4 tex = texture(uTexture, vTexUV);
     if (tex.a < 0.1) discard;
 
     vec3 lm = (uFullbright == 1) ? vec3(1.0) : texture(uLightmap, vLMUV).rgb;
-    // GoldSrc-style gamma (approximate 2.2 -> linear, apply lm, back to gamma)
-    vec3 color = tex.rgb * lm * 2.0;
+    vec3 color = tex.rgb * lm;
     FragColor = vec4(color, tex.a);
 }
 )";
@@ -337,8 +343,12 @@ void GLRenderer::UploadBSP(const BSPFile& bsp, GLBSPData& out,
                     static std::unordered_set<std::string> s_logged;
                     if (s_logged.insert(tex.name).second) {
                         s_logCount++;
-                        fprintf(stderr, "[tex] '%s' emb=%d px=%zu id=%u\n",
-                                tex.name.c_str(), tex.embedded, tex.pixels.size(), gf.texture);
+                        // Log first pixel RGBA to diagnose decode correctness
+                        const uint8_t* px = tex.pixels.data();
+                        fprintf(stderr, "[tex] '%s' %ux%u emb=%d id=%u px0=(%d,%d,%d,%d)\n",
+                                tex.name.c_str(), tex.width, tex.height,
+                                tex.embedded, gf.texture,
+                                (int)px[0], (int)px[1], (int)px[2], (int)px[3]);
                     }
                 }
             }
@@ -440,6 +450,21 @@ void GLRenderer::UploadBSP(const BSPFile& bsp, GLBSPData& out,
 
     glBindVertexArray(0);
 
+    // Summarize unique texture IDs used across faces
+    {
+        std::unordered_map<uint32_t,int> texUsage;
+        for (auto& gf : out.faces)
+            if (gf.uploaded) texUsage[(uint32_t)gf.texture]++;
+        fprintf(stderr, "[UploadBSP] %zu faces, %zu unique textures, %zu total verts\n",
+                out.faces.size(), texUsage.size(), worldVerts.size()/kFloatsPerVert);
+        // List first 8 tex IDs with usage count
+        int n=0;
+        for (auto& [id,cnt] : texUsage) {
+            fprintf(stderr, "  tex id=%u used by %d faces\n", id, cnt);
+            if (++n >= 8) break;
+        }
+    }
+
     out.ready = true;
 }
 
@@ -451,7 +476,9 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
     // Engine calls UploadBSP before calling RenderWorld.
     if (!m_currentBSP || !m_currentBSP->ready) return;
 
+    // 0=normal, 1=bypass lightmap, 2=show UV coords as R/G color
     bool fullbright = false;
+    int  dbgMode    = 0; // change to 1 or 2 for diagnostics
 
     glUseProgram(m_worldShader);
 
@@ -463,7 +490,7 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
     glUniformMatrix4fv(vpLoc, 1, GL_FALSE, vp.Data());
     glUniform1i(texLoc, 0);
     glUniform1i(lmLoc,  1);
-    glUniform1i(fbLoc,  fullbright ? 1 : 0);
+    glUniform1i(fbLoc,  dbgMode ? dbgMode : (fullbright ? 1 : 0));
 
     glEnable(GL_DEPTH_TEST);
 

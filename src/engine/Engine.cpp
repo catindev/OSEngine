@@ -215,26 +215,42 @@ bool Engine::LoadMap(const std::string& mapName) {
             }
         }
     }
-    // Raise spawn well above floor. GoldSrc clip hulls are pre-expanded by the
-    // player hull size, so the solid surface for hull1 is 36 units above the raw
-    // floor. Adding 128 ensures the player starts in clear air and falls to ground.
-    spawnOrigin.z += 128.0f;
+    // Log headnode data to help diagnose collision issues.
+    if (!m_currentBSP->models.empty()) {
+        const auto& mdl = m_currentBSP->models[0];
+        fprintf(stderr, "[spawn] headnodes hull0=%d hull1=%d hull2=%d hull3=%d  clipnodes=%zu\n",
+                mdl.headnode[0], mdl.headnode[1], mdl.headnode[2], mdl.headnode[3],
+                m_currentBSP->clipNodes.size());
+    }
+
+    // GoldSrc places the player at entity origin; hull1 is pre-expanded so the
+    // player (hull center) must be ≥ floor+36 to be in clear space.
+    // Scan upward from entity z in 1-unit steps until we escape solid.
+    {
+        const Vec3 hmin{-16,-16,-36}, hmax{16,16,36};
+        float entityZ = spawnOrigin.z - 128.0f; // revert our earlier +128
+        spawnOrigin.z = entityZ; // start at entity z
+        if (m_collision) {
+            bool clear = false;
+            // scan upward up to 256 units
+            for (int dz = 0; dz <= 256 && !clear; dz++) {
+                Vec3 test = {spawnOrigin.x, spawnOrigin.y, entityZ + dz};
+                auto tr = m_collision->Trace(test, test + Vec3(0,0,-1), hmin, hmax, 0);
+                if (!tr.startSolid) {
+                    spawnOrigin.z = entityZ + (float)dz;
+                    fprintf(stderr, "[spawn] clear at entity_z%+d = %.0f\n", dz, spawnOrigin.z);
+                    clear = true;
+                }
+            }
+            if (!clear)
+                fprintf(stderr, "[spawn] WARNING: no clear position found in 256 units above entity\n");
+        }
+    }
+
     m_localPlayer.physState.origin = spawnOrigin;
+    m_localPlayer.physState.velocity = {};
     m_camera.origin = spawnOrigin + Vec3(0, 0, 28);
     m_camera.angles = spawnAngles;
-
-    // Diagnose spawn: trace down from spawn to check for solid
-    if (m_collision) {
-        Vec3 sp = spawnOrigin;
-        Vec3 dn = sp + Vec3(0, 0, -256);
-        auto tr = m_collision->Trace(sp, dn,
-            {-16,-16,-36}, {16,16,36}, 0 /*MASK_SOLID*/);
-        fprintf(stderr, "[spawn diag] origin=(%.0f,%.0f,%.0f) allSolid=%d startSolid=%d "
-                "hit=%d frac=%.3f endZ=%.0f\n",
-                sp.x, sp.y, sp.z,
-                (int)tr.allSolid, (int)tr.startSolid,
-                (int)tr.hit, tr.fraction, tr.endPos.z);
-    }
 
     printf("Map ready: %s\n", mapName.c_str());
     return true;

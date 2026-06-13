@@ -415,6 +415,25 @@ void PlayerMove::LadderMove(PlayerState& s, const PlayerInput& in, float dt) {
 // ─── Main Move ────────────────────────────────────────────────────────────────
 
 void PlayerMove::Move(PlayerState& s, const PlayerInput& in, float dt) {
+    // If stuck in solid, nudge upward until free (simple PM_CheckStuck substitute).
+    {
+        auto tr = Trace(s.origin, s.origin + Vec3(0,0,1), s);
+        if (tr.startSolid) {
+            // Try escaping upward, then in a grid around the player
+            static const Vec3 nudges[] = {
+                {0,0,2},{0,0,4},{0,0,8},{0,0,16},{0,0,32},
+                {1,0,2},{-1,0,2},{0,1,2},{0,-1,2}
+            };
+            for (auto& n : nudges) {
+                auto tr2 = Trace(s.origin + n, s.origin + n + Vec3(0,0,1), s);
+                if (!tr2.startSolid) {
+                    s.origin = s.origin + n;
+                    break;
+                }
+            }
+        }
+    }
+
     ClampVelocity(s);
     Duck(s, in, dt);
 

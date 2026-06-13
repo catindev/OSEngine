@@ -493,20 +493,28 @@ void GLRenderer::RenderWorld(const BSPFile& bsp,
         }
     }
 
-    for (const GLFace& gf : m_currentBSP->faces) {
-        if (!gf.uploaded || gf.vertexCount == 0) continue;
+    // Count total uploaded verts
+    GLsizei totalUploadedVerts = 0;
+    for (const GLFace& gf : m_currentBSP->faces)
+        if (gf.uploaded && gf.vertexCount > 0) totalUploadedVerts += (GLsizei)gf.vertexCount;
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, gf.texture);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, gf.lightmap);
+    // DIAGNOSTIC: skip per-face texture binding, draw entire world in one call
+    // with white texture to test if glDrawArrays works at all on Apple GL.
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)m_whiteTexture);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)m_whiteTexture);
 
-        glDrawArrays(GL_TRIANGLES, gf.firstVertex, gf.vertexCount);
+    fprintf(stderr, "[RenderWorld] single draw: totalVerts=%d glErr=0x%x\n",
+            totalUploadedVerts, glGetError());
 
-        m_stats.drawCalls++;
-        m_stats.trisRendered += gf.vertexCount / 3;
-        m_stats.facesRendered++;
-    }
+    glDrawArrays(GL_TRIANGLES, 0, totalUploadedVerts);
+
+    fprintf(stderr, "[RenderWorld] after glDrawArrays glErr=0x%x\n", glGetError());
+
+    m_stats.drawCalls = 1;
+    m_stats.trisRendered = totalUploadedVerts / 3;
+    m_stats.facesRendered = (int)m_currentBSP->faces.size();
 
     glBindVertexArray(0);
 }

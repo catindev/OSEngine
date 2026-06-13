@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <sstream>
 #include <algorithm>
+#include <cstdio>
 
 namespace OS {
 
@@ -338,6 +339,13 @@ void BSPLoader::BuildMeshes(BSPFile& bsp) {
         if (ti.miptex >= 0 && ti.miptex < (int)bsp.textures.size()) {
             texW = (float)bsp.textures[ti.miptex].width;
             texH = (float)bsp.textures[ti.miptex].height;
+        }
+        // Diag: first 3 faces — show tex dims and first vertex UV
+        if (fi < 3) {
+            std::string tname = (ti.miptex >= 0 && ti.miptex < (int)bsp.textures.size())
+                ? bsp.textures[ti.miptex].name : "?";
+            fprintf(stderr, "[bsp fi=%zu] tex='%s' W=%.0f H=%.0f numedges=%d\n",
+                    fi, tname.c_str(), texW, texH, rf.numedges);
         }
 
         // Gather face vertices

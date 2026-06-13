@@ -215,35 +215,30 @@ bool Engine::LoadMap(const std::string& mapName) {
             }
         }
     }
-    // Log headnode data to help diagnose collision issues.
-    if (!m_currentBSP->models.empty()) {
-        const auto& mdl = m_currentBSP->models[0];
-        fprintf(stderr, "[spawn] headnodes hull0=%d hull1=%d hull2=%d hull3=%d  clipnodes=%zu\n",
-                mdl.headnode[0], mdl.headnode[1], mdl.headnode[2], mdl.headnode[3],
-                m_currentBSP->clipNodes.size());
-    }
-
-    // GoldSrc places the player at entity origin; hull1 is pre-expanded so the
-    // player (hull center) must be ≥ floor+36 to be in clear space.
-    // Scan upward from entity z in 1-unit steps until we escape solid.
+    // Place player above entity origin and scan downward to find the first
+    // non-solid position for hull 1 (pre-expanded player clip hull).
     {
         const Vec3 hmin{-16,-16,-36}, hmax{16,16,36};
-        float entityZ = spawnOrigin.z - 128.0f; // revert our earlier +128
-        spawnOrigin.z = entityZ; // start at entity z
-        if (m_collision) {
-            bool clear = false;
-            // scan upward up to 256 units
-            for (int dz = 0; dz <= 256 && !clear; dz++) {
-                Vec3 test = {spawnOrigin.x, spawnOrigin.y, entityZ + dz};
+        const float baseZ = spawnOrigin.z;
+        bool placed = false;
+        // Scan from +256 above entity down to entity z
+        for (int dz = 256; dz >= 0 && !placed; dz--) {
+            Vec3 test = {spawnOrigin.x, spawnOrigin.y, baseZ + dz};
+            if (m_collision) {
                 auto tr = m_collision->Trace(test, test + Vec3(0,0,-1), hmin, hmax, 0);
                 if (!tr.startSolid) {
-                    spawnOrigin.z = entityZ + (float)dz;
-                    fprintf(stderr, "[spawn] clear at entity_z%+d = %.0f\n", dz, spawnOrigin.z);
-                    clear = true;
+                    spawnOrigin.z = test.z;
+                    fprintf(stderr, "[spawn] placed at entity_z%+d = %.0f\n", dz, spawnOrigin.z);
+                    placed = true;
                 }
+            } else {
+                spawnOrigin.z = baseZ + 36.0f;
+                placed = true;
             }
-            if (!clear)
-                fprintf(stderr, "[spawn] WARNING: no clear position found in 256 units above entity\n");
+        }
+        if (!placed) {
+            spawnOrigin.z = baseZ + 36.0f;
+            fprintf(stderr, "[spawn] WARNING: fallback spawn z=%.0f\n", spawnOrigin.z);
         }
     }
 
